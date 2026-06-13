@@ -171,6 +171,24 @@ create policy byoi_rw on public.links for all to authenticated
         where g.id = links.group_id
           and g.website_id = public.byoi_claim_website_id()));
 
+-- Provenance on posts: lets the agent mark its own posts, remember covered
+-- topics, and cite source knowledge chunks in the approval UI.
+ALTER TABLE public.posts
+  ADD COLUMN IF NOT EXISTS meta jsonb NOT NULL DEFAULT '{}'::jsonb;
+
+COMMENT ON COLUMN public.posts.meta IS
+  'Post provenance: { agent: bool, topic, source_doc_ids: uuid[], model }';
+
+-- 3. Slug safety: an agent generating slugs daily will eventually collide.
+--    (Deduplicate any existing collisions before applying, if necessary.)
+CREATE UNIQUE INDEX IF NOT EXISTS posts_website_slug_unique
+  ON public.posts (website_id, slug);
+
+-- 4. Speeds up "what has the agent already written" lookups.
+CREATE INDEX IF NOT EXISTS posts_agent_meta_idx
+  ON public.posts USING gin (meta jsonb_path_ops);
+
+
 -- profile_entries -> profiles
 alter table if exists public.profile_entries enable row level security;
 drop policy if exists byoi_rw on public.profile_entries;
