@@ -97,20 +97,6 @@ SANKOR validates the link by performing a live ticket exchange.
 
 ---
 
-## Hub-side install (SANKOR platform operators)
-
-Apply on the **hub** Supabase, not the silo:
-
-- `hub/sankor_hub_byoi.sql` — ticket table + `issue_byoi_ticket` /
-  `redeem_byoi_ticket` RPCs.
-- `hub/migrate_byoi_jsonb.sql` — reshapes `websites.byoi` to stop storing
-  `service_email` / `service_password`.
-
-App integration: `app/lib/byoi/getTenantClient.ts` builds the tenant client
-(ticket → redeem → cached, auto-refreshing token).
-
----
-
 ## Security notes
 
 - Tokens are always `role: authenticated`. The silo never issues `service_role`.
