@@ -86,9 +86,9 @@ declare
     t text;
     website_scoped text[] := array[
         'websites','albums','alumni','availability_rules','bookings','courses',
-        'design_snapshots','embedded_media','faculty','forms','knowledge_docs',
+        'embedded_media','faculty','forms','knowledge_docs',
         'link_groups','milestones','orders','pages','posts','products',
-        'profiles','resources','site_content','team_members','transactions',
+        'profiles','resources','team_members',
         'web3_settings'
     ];
     pred text;

@@ -67,11 +67,16 @@ You have two slots for it (the edge function supports both):
 - Do **not** revoke the symmetric key while tokens rely on it.
 
 ### 3. Import the content schema
-1. Apply your canonical SANKOR content schema first (your existing migrations).
+1. Run `supabase/setup/schema/sankor_content_schema.sql` — the SANKOR content
+   tables, derived from the canonical hub schema and adapted for a fresh silo
+   (dependency-ordered, hub-only tables/FKs removed, extensions declared).
+   **Diff this against your live hub schema before relying on it** — it's
+   generated from a dump, not your running database, so any drift since the
+   dump won't be reflected.
 2. Then run `supabase/setup/schema/sankor_byoi_schema.sql` to add the BYOI
    overlay (site anchor, claim helpers, website-scoped RLS, auth.users
    decoupling).
-3. Seed the site identity at the bottom of that file with your real
+3. Seed the site identity at the bottom of the overlay file with your real
    `website_id` (from the hub) and hub URL.
 
 ### 4. Set edge function secrets
@@ -94,6 +99,20 @@ without an existing Supabase session).
 ### 6. Register with the SANKOR hub
 In the SANKOR admin, add this site's BYOI Supabase **URL** and **anon key**.
 SANKOR validates the link by performing a live ticket exchange.
+
+---
+
+## Hub-side install (SANKOR platform operators)
+
+Apply on the **hub** Supabase, not the silo:
+
+- `hub/sankor_hub_byoi.sql` — ticket table + `issue_byoi_ticket` /
+  `redeem_byoi_ticket` RPCs.
+- `hub/migrate_byoi_jsonb.sql` — reshapes `websites.byoi` to stop storing
+  `service_email` / `service_password`.
+
+App integration: `app/lib/byoi/getTenantClient.ts` builds the tenant client
+(ticket → redeem → cached, auto-refreshing token).
 
 ---
 
