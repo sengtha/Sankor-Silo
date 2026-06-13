@@ -1,0 +1,6 @@
+# Minimal Supabase CLI config for the SANKOR-BYOI silo.
+project_id = "sankor-byoi"
+
+[functions.authenticate-sankor-user]
+# Must be false: the ticket exchange runs before any Supabase session exists.
+verify_jwt = false

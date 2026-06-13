@@ -1,0 +1,210 @@
+-- ============================================================================
+-- SANKOR BYOI SILO  ·  Auth overlay (tenant Supabase side)
+-- ----------------------------------------------------------------------------
+-- Apply this AFTER your canonical SANKOR content schema has been imported into
+-- the tenant's Supabase. This file does NOT recreate content tables; it adds:
+--   1. A single-row site identity anchor (byoi_config)
+--   2. JWT claim helper functions used by RLS
+--   3. Website-scoped RLS on all content tables
+--   4. Decouples the local `websites` row from auth.users
+--
+-- Tokens reaching this DB are minted by THIS silo's edge function using the
+-- silo's own HS256 secret. They carry role=authenticated and app_metadata
+-- claims { website_id, tenant_role }. RLS pins every row to this silo's one
+-- website_id, so a token minted for another site cannot read or write here.
+-- ============================================================================
+
+-- ----------------------------------------------------------------------------
+-- 0. Decouple the local websites anchor from auth.users
+-- ----------------------------------------------------------------------------
+-- The SANKOR hub user id (the JWT `sub`) does not exist in this project's
+-- auth.users, so the canonical websites.user_id -> auth.users FK must go.
+alter table public.websites
+    drop constraint if exists websites_user_id_fkey;
+
+-- Owner identity on the silo is informational only (the hub is authoritative).
+alter table public.websites
+    drop constraint if exists website_owner_check;
+
+-- ----------------------------------------------------------------------------
+-- 1. Site identity anchor (exactly one row: this silo's website_id)
+-- ----------------------------------------------------------------------------
+create table if not exists public.byoi_config (
+    website_id   uuid primary key,        -- must equal the hub's website id
+    hub_url      text not null,           -- e.g. https://hub.sankor.site
+    registered_at timestamptz not null default now(),
+    singleton    boolean not null default true,
+    constraint byoi_config_singleton_chk check (singleton),
+    constraint byoi_config_one_row unique (singleton)
+);
+
+comment on table public.byoi_config is
+    'Single-row anchor identifying which SANKOR website this silo serves.';
+
+-- ----------------------------------------------------------------------------
+-- 2. JWT claim helpers
+-- ----------------------------------------------------------------------------
+-- The website_id claim, read from app_metadata first (Supabase-managed,
+-- not user-spoofable) then top-level as a fallback.
+create or replace function public.byoi_claim_website_id()
+returns uuid
+language sql
+stable
+as $$
+    select coalesce(
+        nullif(auth.jwt() -> 'app_metadata' ->> 'website_id', '')::uuid,
+        nullif(auth.jwt() ->> 'website_id', '')::uuid
+    );
+$$;
+
+-- This silo's configured website_id.
+create or replace function public.byoi_site_website_id()
+returns uuid
+language sql
+stable
+as $$
+    select website_id from public.byoi_config limit 1;
+$$;
+
+-- True only when the request carries an authenticated SANKOR token whose
+-- website_id claim matches this silo. This is the single gate every policy uses.
+create or replace function public.byoi_is_authorized()
+returns boolean
+language sql
+stable
+as $$
+    select auth.role() = 'authenticated'
+       and public.byoi_claim_website_id() is not null
+       and public.byoi_claim_website_id() = public.byoi_site_website_id();
+$$;
+
+-- ----------------------------------------------------------------------------
+-- 3. RLS on website-scoped tables (those with a website_id column)
+-- ----------------------------------------------------------------------------
+do $$
+declare
+    t text;
+    website_scoped text[] := array[
+        'websites','albums','alumni','availability_rules','bookings','courses',
+        'design_snapshots','embedded_media','faculty','forms','knowledge_docs',
+        'link_groups','milestones','orders','pages','posts','products',
+        'profiles','resources','site_content','team_members','transactions',
+        'web3_settings'
+    ];
+    pred text;
+begin
+    foreach t in array website_scoped loop
+        if to_regclass('public.' || t) is null then
+            continue;  -- table not present in this deployment; skip
+        end if;
+
+        execute format('alter table public.%I enable row level security;', t);
+        execute format('drop policy if exists byoi_rw on public.%I;', t);
+
+        if t = 'websites' then
+            -- the anchor row matches by its own id
+            pred := 'public.byoi_is_authorized() and id = public.byoi_site_website_id()';
+        else
+            pred := 'public.byoi_is_authorized() and website_id = public.byoi_claim_website_id()';
+        end if;
+
+        execute format(
+            'create policy byoi_rw on public.%I for all to authenticated using (%s) with check (%s);',
+            t, pred, pred
+        );
+    end loop;
+end;
+$$;
+
+-- ----------------------------------------------------------------------------
+-- 4. RLS on child tables (scoped through their parent's website_id)
+-- ----------------------------------------------------------------------------
+-- media_assets -> albums
+alter table if exists public.media_assets enable row level security;
+drop policy if exists byoi_rw on public.media_assets;
+create policy byoi_rw on public.media_assets for all to authenticated
+    using (public.byoi_is_authorized() and exists (
+        select 1 from public.albums a
+        where a.id = media_assets.album_id
+          and a.website_id = public.byoi_claim_website_id()))
+    with check (public.byoi_is_authorized() and exists (
+        select 1 from public.albums a
+        where a.id = media_assets.album_id
+          and a.website_id = public.byoi_claim_website_id()));
+
+-- order_items -> orders
+alter table if exists public.order_items enable row level security;
+drop policy if exists byoi_rw on public.order_items;
+create policy byoi_rw on public.order_items for all to authenticated
+    using (public.byoi_is_authorized() and exists (
+        select 1 from public.orders o
+        where o.id = order_items.order_id
+          and o.website_id = public.byoi_claim_website_id()))
+    with check (public.byoi_is_authorized() and exists (
+        select 1 from public.orders o
+        where o.id = order_items.order_id
+          and o.website_id = public.byoi_claim_website_id()));
+
+-- leads -> forms
+alter table if exists public.leads enable row level security;
+drop policy if exists byoi_rw on public.leads;
+create policy byoi_rw on public.leads for all to authenticated
+    using (public.byoi_is_authorized() and exists (
+        select 1 from public.forms f
+        where f.id = leads.form_id
+          and f.website_id = public.byoi_claim_website_id()))
+    with check (public.byoi_is_authorized() and exists (
+        select 1 from public.forms f
+        where f.id = leads.form_id
+          and f.website_id = public.byoi_claim_website_id()));
+
+-- links -> link_groups
+alter table if exists public.links enable row level security;
+drop policy if exists byoi_rw on public.links;
+create policy byoi_rw on public.links for all to authenticated
+    using (public.byoi_is_authorized() and exists (
+        select 1 from public.link_groups g
+        where g.id = links.group_id
+          and g.website_id = public.byoi_claim_website_id()))
+    with check (public.byoi_is_authorized() and exists (
+        select 1 from public.link_groups g
+        where g.id = links.group_id
+          and g.website_id = public.byoi_claim_website_id()));
+
+-- profile_entries -> profiles
+alter table if exists public.profile_entries enable row level security;
+drop policy if exists byoi_rw on public.profile_entries;
+create policy byoi_rw on public.profile_entries for all to authenticated
+    using (public.byoi_is_authorized() and exists (
+        select 1 from public.profiles p
+        where p.id = profile_entries.profile_id
+          and p.website_id = public.byoi_claim_website_id()))
+    with check (public.byoi_is_authorized() and exists (
+        select 1 from public.profiles p
+        where p.id = profile_entries.profile_id
+          and p.website_id = public.byoi_claim_website_id()));
+
+-- skills -> profiles
+alter table if exists public.skills enable row level security;
+drop policy if exists byoi_rw on public.skills;
+create policy byoi_rw on public.skills for all to authenticated
+    using (public.byoi_is_authorized() and exists (
+        select 1 from public.profiles p
+        where p.id = skills.profile_id
+          and p.website_id = public.byoi_claim_website_id()))
+    with check (public.byoi_is_authorized() and exists (
+        select 1 from public.profiles p
+        where p.id = skills.profile_id
+          and p.website_id = public.byoi_claim_website_id()));
+
+-- ============================================================================
+-- 5. Seed the site identity (replace placeholders, run once during onboarding)
+-- ============================================================================
+-- insert into public.byoi_config (website_id, hub_url)
+-- values ('00000000-0000-0000-0000-000000000000', 'https://hub.sankor.site')
+-- on conflict (singleton) do update
+--   set website_id = excluded.website_id, hub_url = excluded.hub_url;
+--
+-- insert into public.websites (id, name) values
+--   ('00000000-0000-0000-0000-000000000000', 'My SANKOR Site')
+-- on conflict (id) do nothing;
