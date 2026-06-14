@@ -14,6 +14,34 @@
 -- website_id, so a token minted for another site cannot read or write here.
 -- ============================================================================
 
+-- ============================================================================
+-- AI Agent — social syndication (destinations) support.
+-- social_posts records every syndication attempt: queued for review, published,
+-- or failed. This is what a future "social review" UI reads from, and the audit
+-- trail for what the agent posted where.
+-- ============================================================================
+
+create table if not exists public.social_posts (
+  id uuid primary key default gen_random_uuid(),
+  website_id uuid not null references public.websites(id) on delete cascade,
+  post_id uuid references public.posts(id) on delete set null,
+  platform text not null,                       -- 'twitter' | 'facebook' | ...
+  variant_text text,                            -- the platform-shaped text
+  status text not null default 'queued',        -- queued | published | failed
+  external_id text,                             -- tweet id / fb post id
+  error text,
+  created_at timestamptz not null default now(),
+  constraint social_posts_status_check check (status = any (array['queued','published','failed'])),
+  constraint social_posts_platform_length check (platform is null or length(platform) <= 50),
+  constraint social_posts_text_length check (variant_text is null or length(variant_text) <= 2000)
+);
+
+create index if not exists social_posts_website_idx
+  on public.social_posts (website_id, created_at desc);
+
+comment on table public.social_posts is
+  'Syndication queue/audit for the AI Agent destination layer (X, Facebook, ...).';
+
 -- ----------------------------------------------------------------------------
 -- 0. Decouple the local websites anchor from auth.users
 -- ----------------------------------------------------------------------------
