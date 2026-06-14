@@ -254,3 +254,81 @@ create policy byoi_rw on public.skills for all to authenticated
 -- insert into public.websites (id, name) values
 --   ('00000000-0000-0000-0000-000000000000', 'My SANKOR Site')
 -- on conflict (id) do nothing;
+
+
+-- ============================================================================
+-- AI Agent — BYOI SILO migration.
+-- Run this INSIDE THE TENANT'S OWN SUPABASE PROJECT (not the hub).
+-- It creates the agent's config table and schedules the edge function locally,
+-- so scheduled posting needs no hub session and no JWT bridge.
+-- ============================================================================
+
+-- 1. Config table. The hub admin UI syncs the brief + toggles here; the edge
+--    function reads them. One row per silo (silo == one website).
+create table if not exists public.ai_agent_config (
+  website_id uuid primary key,
+  enabled boolean not null default false,
+  cadence text not null default 'daily',
+  auto_publish boolean not null default false,
+  brief_md text not null default '',
+  sources jsonb not null default '[{"type":"knowledge","enabled":true}]'::jsonb,
+  destinations jsonb not null default '[{"type":"blog","enabled":true}]'::jsonb,
+  supported_locales text[] not null default array['en'],
+  last_run_at timestamptz,
+  last_result text,
+  updated_at timestamptz not null default now()
+);
+
+-- If the table already existed from an earlier version, add the columns.
+alter table public.ai_agent_config
+  add column if not exists sources jsonb not null default '[{"type":"knowledge","enabled":true}]'::jsonb;
+alter table public.ai_agent_config
+  add column if not exists destinations jsonb not null default '[{"type":"blog","enabled":true}]'::jsonb;
+
+-- 2. RLS so the hub admin (authenticated, website_id claim) can upsert config
+--    through the existing minted-JWT bridge. Mirrors the byoi_rw pattern used
+--    by the other website-scoped tables. The edge function uses the service
+--    role and bypasses RLS, so it is unaffected.
+alter table public.ai_agent_config enable row level security;
+drop policy if exists byoi_rw on public.ai_agent_config;
+create policy byoi_rw on public.ai_agent_config for all to authenticated
+  using (public.byoi_is_authorized() and website_id = public.byoi_claim_website_id())
+  with check (public.byoi_is_authorized() and website_id = public.byoi_claim_website_id());
+
+-- 3. Provenance + slug safety on the silo's posts table (same as the hub).
+alter table public.posts add column if not exists meta jsonb not null default '{}'::jsonb;
+create unique index if not exists posts_website_slug_unique on public.posts (website_id, slug);
+create index if not exists posts_agent_meta_idx on public.posts using gin (meta jsonb_path_ops);
+
+-- 4. Schedule. Requires the pg_cron and pg_net extensions (enable both in the
+--    Supabase dashboard: Database -> Extensions). Replace the placeholders:
+--      <PROJECT_REF>           your silo project ref (e.g. abcdxyz)
+--      <AI_AGENT_CRON_SECRET>  same value set as the function secret
+--
+--    Fires hourly; the edge function itself enforces cadence + "post only when
+--    there's something new".
+do $$
+begin
+  if not exists (select 1 from pg_extension where extname = 'pg_cron') then
+    raise notice 'pg_cron not installed — enable it in the dashboard, then re-run section 4.';
+  end if;
+end $$;
+
+-- Unschedule a prior version if present, then (re)create.
+select cron.unschedule('ai-agent-hourly')
+where exists (select 1 from cron.job where jobname = 'ai-agent-hourly');
+
+select cron.schedule(
+  'ai-agent-hourly',
+  '0 * * * *',
+  $cron$
+  select net.http_post(
+    url     := 'https://<PROJECT_REF>.functions.supabase.co/ai-agent-run',
+    headers := jsonb_build_object(
+      'Content-Type', 'application/json',
+      'x-cron-secret', '<AI_AGENT_CRON_SECRET>'
+    ),
+    body    := '{}'::jsonb
+  );
+  $cron$
+);
