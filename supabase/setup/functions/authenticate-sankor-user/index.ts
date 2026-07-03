@@ -105,6 +105,15 @@ Deno.serve(async (req) => {
     return json({ error: "hub unreachable" }, 502);
   }
 
+  // Defense in depth: never mint a token for a website other than this silo's.
+  // We already pass SITE_ID to redeem (so the hub binds the ticket), but we must
+  // not trust the echoed website_id blindly — a buggy or compromised hub could
+  // otherwise coax this silo into signing a token for a different site. The
+  // silo's own RLS would still reject such a token, but refuse to sign it here.
+  if (claims.website_id !== SITE_ID) {
+    return json({ error: "website mismatch" }, 401);
+  }
+
   // ---- 2. Mint the silo JWT ------------------------------------------------
   const now = Math.floor(Date.now() / 1000);
   const key = new TextEncoder().encode(SECRET);
