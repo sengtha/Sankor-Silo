@@ -332,3 +332,30 @@ select cron.schedule(
   );
   $cron$
 );
+
+-- ----------------------------------------------------------------------------
+-- 5. Newsroom (articles + article_sections)
+-- ----------------------------------------------------------------------------
+-- Authoring: authenticated minted-JWT tokens for this website (roles are
+-- enforced on the hub before the write reaches here). Public magazine reads:
+-- published, live articles are readable by anon; sections are public taxonomy.
+alter table if exists public.article_sections enable row level security;
+drop policy if exists byoi_rw on public.article_sections;
+create policy byoi_rw on public.article_sections for all to authenticated
+    using (public.byoi_is_authorized() and website_id = public.byoi_claim_website_id())
+    with check (public.byoi_is_authorized() and website_id = public.byoi_claim_website_id());
+drop policy if exists article_sections_public_read on public.article_sections;
+create policy article_sections_public_read on public.article_sections for select to anon
+    using (true);
+
+alter table if exists public.articles enable row level security;
+drop policy if exists byoi_rw on public.articles;
+create policy byoi_rw on public.articles for all to authenticated
+    using (public.byoi_is_authorized() and website_id = public.byoi_claim_website_id())
+    with check (public.byoi_is_authorized() and website_id = public.byoi_claim_website_id());
+drop policy if exists articles_public_read on public.articles;
+create policy articles_public_read on public.articles for select to anon
+    using (status = 'published' and (publish_at is null or publish_at <= now()));
+
+grant select on public.articles, public.article_sections to anon;
+grant all on public.articles, public.article_sections to authenticated;

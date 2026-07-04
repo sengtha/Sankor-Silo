@@ -549,3 +549,57 @@ create table public.skills (
     constraint skills_proficiency_level_check check (proficiency_level >= 1 and proficiency_level <= 100),
     constraint skills_sort_order_check check (sort_order is null or sort_order >= 0 and sort_order <= 10000)
 );
+
+-- ============================================================================
+-- Newsroom / Magazine (silo-hosted content)
+-- ----------------------------------------------------------------------------
+-- Articles and their sections live on the silo (content sovereignty). Editorial
+-- roles / collaborators remain on the SANKOR hub (website_members); bylines are
+-- denormalized here (author_name/author_avatar) so the silo needs no members
+-- table. RLS is applied in the BYOI overlay (sankor_byoi_schema.sql).
+-- ============================================================================
+create table public.article_sections (
+    id uuid not null default gen_random_uuid(),
+    website_id uuid not null,
+    name jsonb not null,
+    slug text not null,
+    description jsonb,
+    sort_order integer default 0,
+    created_at timestamp with time zone default now(),
+    constraint article_sections_pkey primary key (id),
+    constraint article_sections_website_id_slug_key unique (website_id, slug),
+    constraint article_sections_website_id_fkey foreign key (website_id) references websites(id) on delete cascade,
+    constraint article_sections_slug_format_check check (slug is null or slug ~ '^[a-z0-9\-]+$'::text)
+);
+
+create table public.articles (
+    id uuid not null default gen_random_uuid(),
+    website_id uuid not null,
+    section_id uuid,
+    author_member_id uuid,          -- references hub website_members (no FK on silo)
+    author_name text,               -- denormalized byline (members live on the hub)
+    author_avatar text,
+    title jsonb not null,
+    dek jsonb,
+    slug text not null,
+    content jsonb,
+    cover_image text,
+    tags text[] default '{}'::text[],
+    status text not null default 'draft',
+    is_featured boolean default false,
+    is_premium boolean default false,
+    publish_at timestamp with time zone,
+    published_at timestamp with time zone,
+    created_at timestamp with time zone default now(),
+    updated_at timestamp with time zone default now(),
+    constraint articles_pkey primary key (id),
+    constraint articles_website_id_slug_key unique (website_id, slug),
+    constraint articles_website_id_fkey foreign key (website_id) references websites(id) on delete cascade,
+    constraint articles_section_id_fkey foreign key (section_id) references article_sections(id) on delete set null,
+    constraint articles_status_check check (status = any (array['draft','in_review','scheduled','published','archived'])),
+    constraint articles_slug_format_check check (slug is null or slug ~ '^[a-z0-9\-]+$'::text),
+    constraint articles_text_length_check check ((cover_image is null or length(cover_image) <= 2048) and (slug is null or length(slug) <= 200))
+);
+
+create index if not exists articles_site_status_idx on public.articles (website_id, status, publish_at desc);
+create index if not exists articles_section_idx on public.articles (section_id);
