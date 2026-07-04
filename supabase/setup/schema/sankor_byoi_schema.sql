@@ -359,3 +359,28 @@ create policy articles_public_read on public.articles for select to anon
 
 grant select on public.articles, public.article_sections to anon;
 grant all on public.articles, public.article_sections to authenticated;
+
+-- ----------------------------------------------------------------------------
+-- 6. Ads & Sponsors
+-- ----------------------------------------------------------------------------
+-- Authoring via authenticated minted-JWT tokens (roles enforced on the hub).
+-- Public reads: active sponsors + active ads are readable by anon so they can
+-- render on the public site.
+alter table if exists public.sponsors enable row level security;
+drop policy if exists byoi_rw on public.sponsors;
+create policy byoi_rw on public.sponsors for all to authenticated
+    using (public.byoi_is_authorized() and website_id = public.byoi_claim_website_id())
+    with check (public.byoi_is_authorized() and website_id = public.byoi_claim_website_id());
+drop policy if exists sponsors_public_read on public.sponsors;
+create policy sponsors_public_read on public.sponsors for select to anon using (is_active);
+
+alter table if exists public.ads enable row level security;
+drop policy if exists byoi_rw on public.ads;
+create policy byoi_rw on public.ads for all to authenticated
+    using (public.byoi_is_authorized() and website_id = public.byoi_claim_website_id())
+    with check (public.byoi_is_authorized() and website_id = public.byoi_claim_website_id());
+drop policy if exists ads_public_read on public.ads;
+create policy ads_public_read on public.ads for select to anon using (is_active);
+
+grant select on public.sponsors, public.ads to anon;
+grant all on public.sponsors, public.ads to authenticated;

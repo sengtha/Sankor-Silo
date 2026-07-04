@@ -603,3 +603,72 @@ create table public.articles (
 
 create index if not exists articles_site_status_idx on public.articles (website_id, status, publish_at desc);
 create index if not exists articles_section_idx on public.articles (section_id);
+
+-- ============================================================================
+-- Ads & Sponsors (silo-hosted)
+-- ----------------------------------------------------------------------------
+-- Sponsor directory + image-banner ad units in named placements, with
+-- scheduling, weighted rotation, and impression/click counters. Editorial roles
+-- stay on the SANKOR hub; RLS is applied in the BYOI overlay.
+-- ============================================================================
+create table public.sponsors (
+    id uuid not null default gen_random_uuid(),
+    website_id uuid not null,
+    name text not null,
+    logo_url text,
+    website_url text,
+    tier text,
+    description jsonb,
+    sort_order integer default 0,
+    is_active boolean default true,
+    created_at timestamp with time zone default now(),
+    constraint sponsors_pkey primary key (id),
+    constraint sponsors_website_id_fkey foreign key (website_id) references websites(id) on delete cascade,
+    constraint sponsors_name_length_check check (length(name) <= 200),
+    constraint sponsors_url_length_check check ((logo_url is null or length(logo_url) <= 2048) and (website_url is null or length(website_url) <= 2048))
+);
+
+create table public.ads (
+    id uuid not null default gen_random_uuid(),
+    website_id uuid not null,
+    sponsor_id uuid,
+    name text not null,
+    placement text not null,
+    image_url text,
+    link_url text,
+    alt_text text,
+    weight integer default 1,
+    starts_at timestamp with time zone,
+    ends_at timestamp with time zone,
+    is_active boolean default true,
+    impressions bigint default 0,
+    clicks bigint default 0,
+    created_at timestamp with time zone default now(),
+    constraint ads_pkey primary key (id),
+    constraint ads_website_id_fkey foreign key (website_id) references websites(id) on delete cascade,
+    constraint ads_sponsor_id_fkey foreign key (sponsor_id) references sponsors(id) on delete set null,
+    constraint ads_placement_check check (placement = any (array['header','sidebar','in_article','footer','home_hero'])),
+    constraint ads_weight_check check (weight >= 1 and weight <= 100),
+    constraint ads_url_length_check check ((image_url is null or length(image_url) <= 2048) and (link_url is null or length(link_url) <= 2048))
+);
+
+create index if not exists ads_site_placement_idx on public.ads (website_id, placement, is_active);
+create index if not exists sponsors_site_idx on public.sponsors (website_id, sort_order);
+
+-- Anon-callable counter bump for impressions/clicks (SECURITY DEFINER).
+create or replace function public.increment_ad_stat(p_ad_id uuid, p_kind text)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if p_kind = 'click' then
+    update public.ads set clicks = clicks + 1 where id = p_ad_id;
+  else
+    update public.ads set impressions = impressions + 1 where id = p_ad_id;
+  end if;
+end;
+$$;
+revoke all on function public.increment_ad_stat(uuid, text) from public;
+grant execute on function public.increment_ad_stat(uuid, text) to anon, authenticated;
