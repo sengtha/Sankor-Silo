@@ -672,3 +672,14 @@ end;
 $$;
 revoke all on function public.increment_ad_stat(uuid, text) from public;
 grant execute on function public.increment_ad_stat(uuid, text) to anon, authenticated;
+
+-- Ads: AdSense (network) unit support. ad_type 'banner' = self-served image;
+-- 'adsense' = a Google AdSense unit rendered from the site's publisher id + this
+-- slot. (The publisher id + auto-ads toggle live on the hub, in ads_config.)
+alter table public.ads add column if not exists ad_type text not null default 'banner';
+alter table public.ads add column if not exists ad_slot text;
+do $$ begin
+  if not exists (select 1 from pg_constraint where conname = 'ads_ad_type_check') then
+    alter table public.ads add constraint ads_ad_type_check check (ad_type in ('banner','adsense'));
+  end if;
+end $$;
