@@ -199,24 +199,6 @@ create policy byoi_rw on public.links for all to authenticated
         where g.id = links.group_id
           and g.website_id = public.byoi_claim_website_id()));
 
--- Provenance on posts: lets the agent mark its own posts, remember covered
--- topics, and cite source knowledge chunks in the approval UI.
-ALTER TABLE public.posts
-  ADD COLUMN IF NOT EXISTS meta jsonb NOT NULL DEFAULT '{}'::jsonb;
-
-COMMENT ON COLUMN public.posts.meta IS
-  'Post provenance: { agent: bool, topic, source_doc_ids: uuid[], model }';
-
--- 3. Slug safety: an agent generating slugs daily will eventually collide.
---    (Deduplicate any existing collisions before applying, if necessary.)
-CREATE UNIQUE INDEX IF NOT EXISTS posts_website_slug_unique
-  ON public.posts (website_id, slug);
-
--- 4. Speeds up "what has the agent already written" lookups.
-CREATE INDEX IF NOT EXISTS posts_agent_meta_idx
-  ON public.posts USING gin (meta jsonb_path_ops);
-
-
 -- profile_entries -> profiles
 alter table if exists public.profile_entries enable row level security;
 drop policy if exists byoi_rw on public.profile_entries;
@@ -251,9 +233,9 @@ create policy byoi_rw on public.skills for all to authenticated
 -- on conflict (singleton) do update
 --   set website_id = excluded.website_id, hub_url = excluded.hub_url;
 --
--- insert into public.websites (id, name) values
---   ('00000000-0000-0000-0000-000000000000', 'My SANKOR Site')
--- on conflict (id) do nothing;
+-- insert into public.websites (id, name, status) values
+--   ('00000000-0000-0000-0000-000000000000', 'My SANKOR Site', 'active')
+-- on conflict (id) do update set status = 'active';
 
 
 -- ============================================================================
@@ -307,31 +289,36 @@ create index if not exists posts_agent_meta_idx on public.posts using gin (meta 
 --
 --    Fires hourly; the edge function itself enforces cadence + "post only when
 --    there's something new".
+-- Guarded so this whole file still applies on a silo where pg_cron is not
+-- enabled (the AI Agent is optional). If pg_cron is absent, the schedule is
+-- skipped with a NOTICE — enable pg_cron + pg_net in the dashboard and re-run
+-- this file (idempotent) to activate hourly posting.
 do $$
 begin
   if not exists (select 1 from pg_extension where extname = 'pg_cron') then
-    raise notice 'pg_cron not installed — enable it in the dashboard, then re-run section 4.';
+    raise notice 'pg_cron not installed — AI Agent schedule skipped. Enable pg_cron + pg_net, then re-run to activate.';
+    return;
   end if;
-end $$;
 
--- Unschedule a prior version if present, then (re)create.
-select cron.unschedule('ai-agent-hourly')
-where exists (select 1 from cron.job where jobname = 'ai-agent-hourly');
+  if exists (select 1 from cron.job where jobname = 'ai-agent-hourly') then
+    perform cron.unschedule('ai-agent-hourly');
+  end if;
 
-select cron.schedule(
-  'ai-agent-hourly',
-  '0 * * * *',
-  $cron$
-  select net.http_post(
-    url     := 'https://<PROJECT_REF>.functions.supabase.co/ai-agent-run',
-    headers := jsonb_build_object(
-      'Content-Type', 'application/json',
-      'x-cron-secret', '<AI_AGENT_CRON_SECRET>'
-    ),
-    body    := '{}'::jsonb
+  perform cron.schedule(
+    'ai-agent-hourly',
+    '0 * * * *',
+    $cron$
+    select net.http_post(
+      url     := 'https://<PROJECT_REF>.functions.supabase.co/ai-agent-run',
+      headers := jsonb_build_object(
+        'Content-Type', 'application/json',
+        'x-cron-secret', '<AI_AGENT_CRON_SECRET>'
+      ),
+      body    := '{}'::jsonb
+    );
+    $cron$
   );
-  $cron$
-);
+end $$;
 
 -- ----------------------------------------------------------------------------
 -- 5. Newsroom (articles + article_sections)
@@ -384,3 +371,74 @@ create policy ads_public_read on public.ads for select to anon using (is_active)
 
 grant select on public.sponsors, public.ads to anon;
 grant all on public.sponsors, public.ads to authenticated;
+
+-- ============================================================================
+-- 7. Public (anon) access for the PUBLIC website
+-- ----------------------------------------------------------------------------
+-- The public site is served with this silo's *anon* key (no minted JWT), so
+-- anonymous visitors need to read published content and submit forms / orders /
+-- bookings. This mirrors the hub's "Public view/create" policies. Without it a
+-- BYOI public site renders empty (RLS is on; only authenticated byoi_rw exists).
+--
+-- Single-tenant safety: every row on this silo belongs to the one site, so a
+-- flag predicate (published / is_active / true) is sufficient — there is no
+-- other tenant's data to leak. Authenticated (minted-JWT) access is unchanged.
+-- knowledge_docs, orders/leads/bookings *reads* stay private (authenticated
+-- only); only their public *writes* are opened below. All guarded + idempotent.
+-- ============================================================================
+
+-- ---- Public reads (anon SELECT) --------------------------------------------
+do $$
+declare
+  rec text[];
+  -- {table, anon-visibility predicate}. Tables already given anon read earlier
+  -- (articles, article_sections, sponsors, ads) are intentionally omitted.
+  reads text[][] := array[
+    ['websites',           'status = ''active'''],
+    ['posts',              'published'],
+    ['pages',              'is_published'],
+    ['products',           'is_published'],
+    ['team_members',       'true'],
+    ['web3_settings',      'is_active'],
+    ['embedded_media',     'is_publish'],
+    ['albums',             'true'],
+    ['media_assets',       'true'],
+    ['faculty',            'true'],
+    ['courses',            'true'],
+    ['alumni',             'is_public'],
+    ['milestones',         'true'],
+    ['resources',          'true'],
+    ['link_groups',        'true'],
+    ['links',              'is_active'],
+    ['forms',              'is_active'],
+    ['availability_rules', 'true'],
+    ['profiles',           'true'],
+    ['profile_entries',    'true'],
+    ['skills',             'true']
+  ];
+begin
+  foreach rec slice 1 in array reads loop
+    continue when to_regclass('public.' || rec[1]) is null;
+    execute format('alter table public.%I enable row level security', rec[1]);
+    execute format('drop policy if exists byoi_public_read on public.%I', rec[1]);
+    execute format('create policy byoi_public_read on public.%I for select to anon using (%s)', rec[1], rec[2]);
+    execute format('grant select on public.%I to anon', rec[1]);
+  end loop;
+end $$;
+
+-- ---- Public submissions (anon INSERT) --------------------------------------
+-- Form leads, storefront checkout (orders + order_items), and public bookings.
+-- Reads on these remain authenticated-only (byoi_rw), so submissions are
+-- write-only for the public — a visitor cannot list other people's orders.
+do $$
+declare
+  t text;
+begin
+  foreach t in array array['leads','orders','order_items','bookings'] loop
+    continue when to_regclass('public.' || t) is null;
+    execute format('alter table public.%I enable row level security', t);
+    execute format('drop policy if exists byoi_public_insert on public.%I', t);
+    execute format('create policy byoi_public_insert on public.%I for insert to anon with check (true)', t);
+    execute format('grant insert on public.%I to anon', t);
+  end loop;
+end $$;
