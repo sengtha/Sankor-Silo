@@ -4,3 +4,8 @@ project_id = "sankor-byoi"
 [functions.authenticate-sankor-user]
 # Must be false: the ticket exchange runs before any Supabase session exists.
 verify_jwt = false
+
+[functions.ai-agent-run]
+# Must be false: pg_cron calls this with a shared-secret header, not a Supabase
+# JWT. Auth is enforced inside the function via AI_AGENT_CRON_SECRET.
+verify_jwt = false
