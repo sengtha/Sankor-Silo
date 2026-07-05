@@ -103,6 +103,17 @@ Enable the required extensions first (Dashboard → **Database → Extensions**)
 Both files only touch tables that exist, so they apply the same whether or not
 you use every module.
 
+**Shortcut (psql/CLI only):** run both in one go with
+`bootstrap.sql` — it `\ir`-includes the two files in order:
+
+```bash
+psql "postgresql://postgres:<pw>@db.<ref>.supabase.co:5432/postgres" \
+     -v ON_ERROR_STOP=1 -f supabase/setup/schema/bootstrap.sql
+```
+
+(The Supabase **SQL editor** can't run `bootstrap.sql` — it doesn't support
+`\ir` — so there, paste the two files yourself in the order above.)
+
 ### 4. Seed this silo's identity
 At the bottom of `sankor_byoi_schema.sql` (section 5) there's a commented
 template. Run it once with your real `website_id` (from the hub) and hub URL:
