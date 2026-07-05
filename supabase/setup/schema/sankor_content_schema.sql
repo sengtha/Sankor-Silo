@@ -584,6 +584,7 @@ create table public.articles (
     slug text not null,
     content jsonb,
     cover_image text,
+    gallery jsonb not null default '[]'::jsonb,   -- ordered [{ url, caption? }] shown below the body
     tags text[] default '{}'::text[],
     status text not null default 'draft',
     is_featured boolean default false,
@@ -683,3 +684,7 @@ do $$ begin
     alter table public.ads add constraint ads_ad_type_check check (ad_type in ('banner','adsense'));
   end if;
 end $$;
+
+-- Newsroom: article gallery — ordered [{ url, caption? }] shown below the body.
+-- Idempotent add for silos provisioned before this column existed.
+alter table public.articles add column if not exists gallery jsonb not null default '[]'::jsonb;
