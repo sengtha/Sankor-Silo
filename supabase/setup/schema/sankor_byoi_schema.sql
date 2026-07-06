@@ -484,3 +484,138 @@ begin
     execute format('grant insert on public.%I to anon', t);
   end loop;
 end $$;
+
+-- ============================================================================
+-- 8. Site snapshots (whole-site backup for design/template trials)
+-- ----------------------------------------------------------------------------
+-- SANKOR lets an owner back up their whole site before trying a new design or
+-- installing a marketplace template, then restore it in one click. On a BYOI
+-- silo the module content (posts, resume, gallery, …) lives HERE, not on the
+-- hub, so the module half of each backup is stored and rebuilt on the silo.
+-- The hub keeps the design_config + site_content half and the snapshot index.
+--
+-- Scope is presentation + content ONLY. Transactional/customer data (orders,
+-- order_items, leads, bookings) and secrets/config are never captured or
+-- restored — a restore must never be able to wipe real business records.
+-- ============================================================================
+
+create table if not exists public.site_snapshots (
+    id          uuid primary key default gen_random_uuid(),
+    website_id  uuid not null,
+    kind        text not null default 'manual',   -- manual | auto | pre_apply | pre_restore
+    modules     jsonb not null default '{}'::jsonb,
+    created_at  timestamptz not null default now()
+);
+
+-- Authoring-only: the minted token for this site may read/write its snapshots;
+-- anon never can (backups can contain unpublished drafts).
+alter table public.site_snapshots enable row level security;
+drop policy if exists byoi_rw on public.site_snapshots;
+create policy byoi_rw on public.site_snapshots for all to authenticated
+    using (public.byoi_is_authorized() and website_id = public.byoi_claim_website_id())
+    with check (public.byoi_is_authorized() and website_id = public.byoi_claim_website_id());
+grant all on public.site_snapshots to authenticated;
+
+-- Capture every in-scope module table for this site into one jsonb bundle.
+-- SECURITY DEFINER so it can read past per-table RLS in one atomic pass; the
+-- internal check pins it to this silo's authorized website.
+create or replace function public.snapshot_modules(p_website_id uuid)
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = public
+as $$
+declare
+    -- presentation + content only; transactional tables are intentionally absent
+    all_tables text[] := array[
+        'article_sections','articles','profiles','profile_entries','skills',
+        'albums','media_assets','link_groups','links','faculty','courses','alumni',
+        'sponsors','ads','posts','team_members','pages','milestones','embedded_media',
+        'resources','forms','products'
+    ];
+    t text;
+    result jsonb := '{}'::jsonb;
+    rows jsonb;
+begin
+    if not public.byoi_is_authorized() or p_website_id is distinct from public.byoi_site_website_id() then
+        raise exception 'Unauthorized: cannot snapshot this website';
+    end if;
+
+    foreach t in array all_tables loop
+        if to_regclass('public.' || t) is not null then
+            execute format(
+                'select coalesce(jsonb_agg(to_jsonb(x)), ''[]''::jsonb) from public.%I x where x.website_id = $1',
+                t
+            ) into rows using p_website_id;
+            result := result || jsonb_build_object(t, rows);
+        end if;
+    end loop;
+
+    return result;
+end;
+$$;
+
+-- Rebuild the in-scope module tables from a captured bundle, atomically.
+--   * "replace" tables (pure presentation, no transactional children) are wiped
+--     for this site and re-inserted verbatim (ids preserved so FKs line up).
+--   * "protected" tables (products, forms) have orders/leads pointing at them,
+--     so they are NEVER deleted — only missing rows are restored — and are
+--     inserted first so replace-table FKs (e.g. resources -> forms) resolve.
+create or replace function public.restore_modules(p_website_id uuid, p_modules jsonb)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+    -- parent -> child. Deleted in reverse, re-inserted in this order.
+    replace_tables text[] := array[
+        'article_sections','articles',
+        'profiles','profile_entries','skills',
+        'albums','media_assets',
+        'link_groups','links',
+        'faculty','courses','alumni',
+        'sponsors','ads',
+        'posts','team_members','pages','milestones','embedded_media','resources'
+    ];
+    protect_tables text[] := array['forms','products'];
+    t text;
+    i int;
+begin
+    if not public.byoi_is_authorized() or p_website_id is distinct from public.byoi_site_website_id() then
+        raise exception 'Unauthorized: cannot restore snapshots for this website';
+    end if;
+
+    -- 1. Protected parents first: restore only rows that are missing.
+    foreach t in array protect_tables loop
+        if to_regclass('public.' || t) is not null and p_modules ? t then
+            execute format(
+                'insert into public.%I select * from jsonb_populate_recordset(null::public.%I, $1->%L) on conflict (id) do nothing',
+                t, t, t
+            ) using p_modules;
+        end if;
+    end loop;
+
+    -- 2. Replace tables: delete children -> parents.
+    for i in reverse array_length(replace_tables, 1)..1 loop
+        t := replace_tables[i];
+        if to_regclass('public.' || t) is not null then
+            execute format('delete from public.%I where website_id = $1', t) using p_website_id;
+        end if;
+    end loop;
+
+    -- 3. Replace tables: insert parents -> children.
+    foreach t in array replace_tables loop
+        if to_regclass('public.' || t) is not null and p_modules ? t then
+            execute format(
+                'insert into public.%I select * from jsonb_populate_recordset(null::public.%I, $1->%L)',
+                t, t, t
+            ) using p_modules;
+        end if;
+    end loop;
+end;
+$$;
+
+grant execute on function public.snapshot_modules(uuid) to authenticated;
+grant execute on function public.restore_modules(uuid, jsonb) to authenticated;
