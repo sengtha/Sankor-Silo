@@ -74,10 +74,21 @@ comment on table public.byoi_config is
 -- ----------------------------------------------------------------------------
 -- The website_id claim, read from app_metadata first (Supabase-managed,
 -- not user-spoofable) then top-level as a fallback.
+--
+-- All three helpers are SECURITY DEFINER with a pinned search_path. This is
+-- essential for byoi_site_website_id(): byoi_config has RLS enabled, so a
+-- STABLE/INVOKER function reading it as the `authenticated` role would be
+-- filtered to zero rows and return NULL, making byoi_is_authorized() NULL and
+-- silently denying every authoring write. Running as the definer (owner)
+-- bypasses that RLS so the silo can always read its own single-row identity.
+-- The others are marked definer too for consistency and to keep the search
+-- path fixed; they only read auth.* claims, so this grants no extra exposure.
 create or replace function public.byoi_claim_website_id()
 returns uuid
 language sql
 stable
+security definer
+set search_path = public
 as $$
     select coalesce(
         nullif(auth.jwt() -> 'app_metadata' ->> 'website_id', '')::uuid,
@@ -85,11 +96,14 @@ as $$
     );
 $$;
 
--- This silo's configured website_id.
+-- This silo's configured website_id. SECURITY DEFINER so it reads byoi_config
+-- past that table's RLS (see note above) — otherwise authoring writes are denied.
 create or replace function public.byoi_site_website_id()
 returns uuid
 language sql
 stable
+security definer
+set search_path = public
 as $$
     select website_id from public.byoi_config limit 1;
 $$;
@@ -100,11 +114,39 @@ create or replace function public.byoi_is_authorized()
 returns boolean
 language sql
 stable
+security definer
+set search_path = public
 as $$
     select auth.role() = 'authenticated'
        and public.byoi_claim_website_id() is not null
        and public.byoi_claim_website_id() = public.byoi_site_website_id();
 $$;
+
+-- Connect-time health probe. Returns a small diagnostic JSON so the SANKOR hub
+-- can validate a silo link the moment it's registered — catching a missing
+-- byoi_config row, an unauthorized/mismatched token, or (historically) a NULL
+-- config caused by a non-definer helper, instead of surfacing it as an opaque
+-- RLS violation on the operator's first write. SECURITY DEFINER so `ok`
+-- reflects the real config regardless of the caller's RLS. Nothing here is
+-- secret (the website_id is issued by the hub), so anon + authenticated may call
+-- it; the hub calls it with the minted token to assert `authorized = true`.
+create or replace function public.byoi_health()
+returns jsonb
+language sql
+stable
+security definer
+set search_path = public
+as $$
+    select jsonb_build_object(
+        'ok',                    (select count(*) = 1 from public.byoi_config),
+        'configured_website_id', public.byoi_site_website_id(),
+        'role',                  auth.role(),
+        'claim_website_id',      public.byoi_claim_website_id(),
+        'authorized',            public.byoi_is_authorized()
+    );
+$$;
+
+grant execute on function public.byoi_health() to anon, authenticated;
 
 -- ----------------------------------------------------------------------------
 -- 3. RLS on website-scoped tables (those with a website_id column)
