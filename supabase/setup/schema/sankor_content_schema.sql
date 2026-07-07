@@ -688,3 +688,22 @@ end $$;
 -- Newsroom: article gallery — ordered [{ url, caption? }] shown below the body.
 -- Idempotent add for silos provisioned before this column existed.
 alter table public.articles add column if not exists gallery jsonb not null default '[]'::jsonb;
+
+-- has_knowledge_docs(): boolean presence check for the public AI chat launcher.
+-- knowledge_docs is owner-only under RLS, so an anonymous storefront visitor
+-- can't read it to decide whether to show the launcher. This SECURITY DEFINER
+-- function exposes only a boolean (never row content), so it's safe for anon.
+create or replace function public.has_knowledge_docs(filter_website_id uuid)
+returns boolean
+language sql
+security definer
+stable
+set search_path = public
+as $$
+  select exists (
+    select 1 from public.knowledge_docs
+    where website_id = filter_website_id
+  );
+$$;
+revoke all on function public.has_knowledge_docs(uuid) from public;
+grant execute on function public.has_knowledge_docs(uuid) to anon, authenticated;
