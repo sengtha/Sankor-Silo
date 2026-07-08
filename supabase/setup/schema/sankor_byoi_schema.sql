@@ -157,7 +157,8 @@ declare
     website_scoped text[] := array[
         'websites','albums','alumni','availability_rules','bookings','courses',
         'embedded_media','faculty','forms','knowledge_docs',
-        'link_groups','milestones','orders','pages','posts','products',
+        'link_groups','lms_courses','lms_sections','lms_lessons',
+        'milestones','orders','pages','posts','products',
         'profiles','resources','team_members',
         'web3_settings'
     ];
@@ -388,6 +389,24 @@ create policy articles_public_read on public.articles for select to anon
 
 grant select on public.articles, public.article_sections to anon;
 grant all on public.articles, public.article_sections to authenticated;
+
+-- ----------------------------------------------------------------------------
+-- Courses / LMS — anon reads published courses + their sections/lessons.
+-- (byoi_rw for authenticated writes is applied by the website_scoped loop above.)
+-- Paid-lesson content withholding is enforced in the public read layer, not here.
+-- ----------------------------------------------------------------------------
+drop policy if exists lms_courses_public_read on public.lms_courses;
+create policy lms_courses_public_read on public.lms_courses for select to anon
+    using (status = 'published');
+drop policy if exists lms_sections_public_read on public.lms_sections;
+create policy lms_sections_public_read on public.lms_sections for select to anon
+    using (exists (select 1 from public.lms_courses c where c.id = course_id and c.status = 'published'));
+drop policy if exists lms_lessons_public_read on public.lms_lessons;
+create policy lms_lessons_public_read on public.lms_lessons for select to anon
+    using (exists (select 1 from public.lms_courses c where c.id = course_id and c.status = 'published'));
+
+grant select on public.lms_courses, public.lms_sections, public.lms_lessons to anon;
+grant all on public.lms_courses, public.lms_sections, public.lms_lessons to authenticated;
 
 -- ----------------------------------------------------------------------------
 -- 6. Ads & Sponsors
