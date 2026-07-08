@@ -781,3 +781,62 @@ create table public.lms_lessons (
 );
 create index if not exists lms_lessons_course_idx on public.lms_lessons (course_id, sort_order);
 create index if not exists lms_lessons_section_idx on public.lms_lessons (section_id, sort_order);
+
+-- ============================================================================
+-- Events / Ticketing (silo-hosted)
+-- ----------------------------------------------------------------------------
+-- Content only (events -> ticket types). Issued tickets / purchase entitlement
+-- live on the hub (service-role), like lms_enrollments. RLS applied in the BYOI
+-- overlay (sankor_byoi_schema.sql).
+-- ============================================================================
+create table public.events (
+    id            uuid not null default gen_random_uuid(),
+    website_id    uuid not null,
+    slug          text not null,
+    title         jsonb not null,
+    description   jsonb,
+    cover_image   text,
+    category      text,
+    is_online     boolean not null default false,
+    venue_name    text,
+    venue_address text,
+    online_url    text,
+    start_at      timestamptz,
+    end_at        timestamptz,
+    timezone      text,
+    capacity      integer,
+    status        text not null default 'draft',
+    is_featured   boolean not null default false,
+    sort_order    integer not null default 0,
+    created_at    timestamptz not null default now(),
+    updated_at    timestamptz not null default now(),
+    constraint events_pkey primary key (id),
+    constraint events_website_id_slug_key unique (website_id, slug),
+    constraint events_website_id_fkey foreign key (website_id) references websites(id) on delete cascade,
+    constraint events_status_check check (status = any (array['draft','published','archived','cancelled'])),
+    constraint events_slug_format_check check (slug ~ '^[a-z0-9\-]+$'::text and length(slug) <= 200)
+);
+create index if not exists events_site_status_idx on public.events (website_id, status, start_at);
+
+create table public.event_ticket_types (
+    id           uuid not null default gen_random_uuid(),
+    website_id   uuid not null,
+    event_id     uuid not null,
+    name         jsonb not null,
+    description  jsonb,
+    is_free      boolean not null default false,
+    price        numeric(12,2) not null default 0,
+    currency     text not null default 'USD',
+    quantity     integer,
+    sold         integer not null default 0,
+    sale_start   timestamptz,
+    sale_end     timestamptz,
+    sort_order   integer not null default 0,
+    created_at   timestamptz not null default now(),
+    constraint event_ticket_types_pkey primary key (id),
+    constraint event_ticket_types_website_id_fkey foreign key (website_id) references websites(id) on delete cascade,
+    constraint event_ticket_types_event_id_fkey foreign key (event_id) references events(id) on delete cascade,
+    constraint event_ticket_types_sold_check check (sold >= 0),
+    constraint event_ticket_types_qty_check check (quantity is null or quantity >= 0)
+);
+create index if not exists event_ticket_types_event_idx on public.event_ticket_types (event_id, sort_order);
