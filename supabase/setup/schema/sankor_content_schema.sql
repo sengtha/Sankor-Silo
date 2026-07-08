@@ -840,3 +840,37 @@ create table public.event_ticket_types (
     constraint event_ticket_types_qty_check check (quantity is null or quantity >= 0)
 );
 create index if not exists event_ticket_types_event_idx on public.event_ticket_types (event_id, sort_order);
+
+-- ============================================================================
+-- Membership / Subscription (silo-hosted)
+-- ----------------------------------------------------------------------------
+-- Plan content only. Membership entitlement (who paid, until when) lives on the
+-- hub (service-role). RLS applied in the BYOI overlay (sankor_byoi_schema.sql).
+-- ============================================================================
+create table public.membership_plans (
+    id             uuid not null default gen_random_uuid(),
+    website_id     uuid not null,
+    slug           text not null,
+    name           jsonb not null,
+    description    jsonb,
+    cover_image    text,
+    price          numeric(12,2) not null default 0,
+    currency       text not null default 'USD',
+    interval       text not null default 'monthly',
+    duration_days  integer,
+    perks          jsonb not null default '[]'::jsonb,
+    member_content jsonb,
+    tier_level     integer not null default 0,
+    status         text not null default 'draft',
+    is_featured    boolean not null default false,
+    sort_order     integer not null default 0,
+    created_at     timestamptz not null default now(),
+    updated_at     timestamptz not null default now(),
+    constraint membership_plans_pkey primary key (id),
+    constraint membership_plans_website_id_slug_key unique (website_id, slug),
+    constraint membership_plans_website_id_fkey foreign key (website_id) references websites(id) on delete cascade,
+    constraint membership_plans_interval_check check (interval = any (array['one_time','monthly','yearly'])),
+    constraint membership_plans_status_check check (status = any (array['draft','published','archived'])),
+    constraint membership_plans_slug_format_check check (slug ~ '^[a-z0-9\-]+$'::text and length(slug) <= 200)
+);
+create index if not exists membership_plans_site_status_idx on public.membership_plans (website_id, status, sort_order);
