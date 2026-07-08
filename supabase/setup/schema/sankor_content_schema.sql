@@ -874,3 +874,35 @@ create table public.membership_plans (
     constraint membership_plans_slug_format_check check (slug ~ '^[a-z0-9\-]+$'::text and length(slug) <= 200)
 );
 create index if not exists membership_plans_site_status_idx on public.membership_plans (website_id, status, sort_order);
+
+-- ============================================================================
+-- Testimonials / Reviews (silo-hosted)
+-- ----------------------------------------------------------------------------
+-- Content + public submissions (pending until an editor approves). RLS applied
+-- in the BYOI overlay (sankor_byoi_schema.sql): editor rw, anon read published,
+-- anon insert pending.
+-- ============================================================================
+create table public.testimonials (
+    id             uuid not null default gen_random_uuid(),
+    website_id     uuid not null,
+    author_name    text not null,
+    author_title   text,
+    author_company text,
+    avatar_url     text,
+    rating         integer,
+    quote          jsonb not null,
+    source         text not null default 'manual',
+    is_featured    boolean not null default false,
+    status         text not null default 'pending',
+    sort_order     integer not null default 0,
+    created_at     timestamptz not null default now(),
+    updated_at     timestamptz not null default now(),
+    constraint testimonials_pkey primary key (id),
+    constraint testimonials_website_id_fkey foreign key (website_id) references websites(id) on delete cascade,
+    constraint testimonials_rating_check check (rating is null or (rating >= 1 and rating <= 5)),
+    constraint testimonials_source_check check (source = any (array['manual','form','import'])),
+    constraint testimonials_status_check check (status = any (array['pending','published','archived'])),
+    constraint testimonials_name_len check (length(author_name) between 1 and 120),
+    constraint testimonials_quote_len check (length(quote::text) <= 4000)
+);
+create index if not exists testimonials_site_status_idx on public.testimonials (website_id, status, sort_order);

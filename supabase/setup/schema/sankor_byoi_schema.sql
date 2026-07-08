@@ -158,7 +158,7 @@ declare
         'websites','albums','alumni','availability_rules','bookings','courses',
         'embedded_media','faculty','forms','knowledge_docs',
         'link_groups','lms_courses','lms_sections','lms_lessons',
-        'events','event_ticket_types','membership_plans',
+        'events','event_ticket_types','membership_plans','testimonials',
         'milestones','orders','pages','posts','products',
         'profiles','resources','team_members',
         'web3_settings'
@@ -432,6 +432,21 @@ create policy membership_plans_public_read on public.membership_plans for select
 
 grant select on public.membership_plans to anon;
 grant all on public.membership_plans to authenticated;
+
+-- ----------------------------------------------------------------------------
+-- Testimonials: anon read published + anon submit (pending only). The
+-- website_scoped byoi_rw policy already covers editor authoring/moderation.
+-- ----------------------------------------------------------------------------
+drop policy if exists testimonials_public_read on public.testimonials;
+create policy testimonials_public_read on public.testimonials for select to anon
+    using (status = 'published');
+drop policy if exists testimonials_public_submit on public.testimonials;
+create policy testimonials_public_submit on public.testimonials for insert to anon
+    with check (status = 'pending' and is_featured = false and source = 'form'
+        and website_id = public.byoi_site_website_id());
+
+grant select, insert on public.testimonials to anon;
+grant all on public.testimonials to authenticated;
 
 -- ----------------------------------------------------------------------------
 -- 6. Ads & Sponsors
