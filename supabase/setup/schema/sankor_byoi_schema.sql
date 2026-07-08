@@ -158,6 +158,7 @@ declare
         'websites','albums','alumni','availability_rules','bookings','courses',
         'embedded_media','faculty','forms','knowledge_docs',
         'link_groups','lms_courses','lms_sections','lms_lessons',
+        'events','event_ticket_types',
         'milestones','orders','pages','posts','products',
         'profiles','resources','team_members',
         'web3_settings'
@@ -407,6 +408,19 @@ create policy lms_lessons_public_read on public.lms_lessons for select to anon
 
 grant select on public.lms_courses, public.lms_sections, public.lms_lessons to anon;
 grant all on public.lms_courses, public.lms_sections, public.lms_lessons to authenticated;
+
+-- ----------------------------------------------------------------------------
+-- Events / Ticketing public reads (anon): published events + their ticket types.
+-- ----------------------------------------------------------------------------
+drop policy if exists events_public_read on public.events;
+create policy events_public_read on public.events for select to anon
+    using (status = 'published');
+drop policy if exists event_ticket_types_public_read on public.event_ticket_types;
+create policy event_ticket_types_public_read on public.event_ticket_types for select to anon
+    using (exists (select 1 from public.events e where e.id = event_id and e.status = 'published'));
+
+grant select on public.events, public.event_ticket_types to anon;
+grant all on public.events, public.event_ticket_types to authenticated;
 
 -- ----------------------------------------------------------------------------
 -- 6. Ads & Sponsors
