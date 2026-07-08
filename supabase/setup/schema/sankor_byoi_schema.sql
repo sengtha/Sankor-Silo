@@ -158,7 +158,7 @@ declare
         'websites','albums','alumni','availability_rules','bookings','courses',
         'embedded_media','faculty','forms','knowledge_docs',
         'link_groups','lms_courses','lms_sections','lms_lessons',
-        'events','event_ticket_types',
+        'events','event_ticket_types','membership_plans',
         'milestones','orders','pages','posts','products',
         'profiles','resources','team_members',
         'web3_settings'
@@ -421,6 +421,17 @@ create policy event_ticket_types_public_read on public.event_ticket_types for se
 
 grant select on public.events, public.event_ticket_types to anon;
 grant all on public.events, public.event_ticket_types to authenticated;
+
+-- ----------------------------------------------------------------------------
+-- Membership public reads (anon): published plans. The members-only body
+-- (member_content) is withheld in the app read layer for non-members.
+-- ----------------------------------------------------------------------------
+drop policy if exists membership_plans_public_read on public.membership_plans;
+create policy membership_plans_public_read on public.membership_plans for select to anon
+    using (status = 'published');
+
+grant select on public.membership_plans to anon;
+grant all on public.membership_plans to authenticated;
 
 -- ----------------------------------------------------------------------------
 -- 6. Ads & Sponsors
