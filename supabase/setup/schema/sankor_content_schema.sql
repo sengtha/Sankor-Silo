@@ -707,3 +707,77 @@ as $$
 $$;
 revoke all on function public.has_knowledge_docs(uuid) from public;
 grant execute on function public.has_knowledge_docs(uuid) to anon, authenticated;
+
+-- ============================================================================
+-- Courses / LMS (silo-hosted)
+-- ----------------------------------------------------------------------------
+-- Namespaced lms_* to avoid the Education `courses` table. Content only
+-- (courses -> sections -> lessons); enrollment/progress/payment land later.
+-- RLS applied in the BYOI overlay (sankor_byoi_schema.sql).
+-- ============================================================================
+create table public.lms_courses (
+    id            uuid not null default gen_random_uuid(),
+    website_id    uuid not null,
+    slug          text not null,
+    title         jsonb not null,
+    subtitle      jsonb,
+    description   jsonb,
+    cover_image   text,
+    category      text,
+    level         text,
+    is_free       boolean not null default true,
+    price         numeric(12,2) not null default 0,
+    currency      text not null default 'USD',
+    status        text not null default 'draft',
+    is_featured   boolean not null default false,
+    sort_order    integer not null default 0,
+    created_at    timestamptz not null default now(),
+    updated_at    timestamptz not null default now(),
+    constraint lms_courses_pkey primary key (id),
+    constraint lms_courses_website_id_slug_key unique (website_id, slug),
+    constraint lms_courses_website_id_fkey foreign key (website_id) references websites(id) on delete cascade,
+    constraint lms_courses_level_check check (level is null or level = any (array['beginner','intermediate','advanced'])),
+    constraint lms_courses_status_check check (status = any (array['draft','published','archived'])),
+    constraint lms_courses_slug_format_check check (slug ~ '^[a-z0-9\-]+$'::text and length(slug) <= 200)
+);
+create index if not exists lms_courses_site_status_idx on public.lms_courses (website_id, status, sort_order);
+
+create table public.lms_sections (
+    id          uuid not null default gen_random_uuid(),
+    website_id  uuid not null,
+    course_id   uuid not null,
+    title       jsonb not null,
+    sort_order  integer not null default 0,
+    created_at  timestamptz not null default now(),
+    constraint lms_sections_pkey primary key (id),
+    constraint lms_sections_website_id_fkey foreign key (website_id) references websites(id) on delete cascade,
+    constraint lms_sections_course_id_fkey foreign key (course_id) references lms_courses(id) on delete cascade
+);
+create index if not exists lms_sections_course_idx on public.lms_sections (course_id, sort_order);
+
+create table public.lms_lessons (
+    id            uuid not null default gen_random_uuid(),
+    website_id    uuid not null,
+    course_id     uuid not null,
+    section_id    uuid,
+    slug          text not null,
+    title         jsonb not null,
+    type          text not null default 'text',
+    content       jsonb,
+    video_url     text,
+    attachment_url text,
+    duration_minutes integer,
+    is_preview    boolean not null default false,
+    sort_order    integer not null default 0,
+    created_at    timestamptz not null default now(),
+    updated_at    timestamptz not null default now(),
+    constraint lms_lessons_pkey primary key (id),
+    constraint lms_lessons_course_id_slug_key unique (course_id, slug),
+    constraint lms_lessons_website_id_fkey foreign key (website_id) references websites(id) on delete cascade,
+    constraint lms_lessons_course_id_fkey foreign key (course_id) references lms_courses(id) on delete cascade,
+    constraint lms_lessons_section_id_fkey foreign key (section_id) references lms_sections(id) on delete set null,
+    constraint lms_lessons_type_check check (type = any (array['text','video','pdf','quiz'])),
+    constraint lms_lessons_slug_format_check check (slug ~ '^[a-z0-9\-]+$'::text and length(slug) <= 200)
+);
+create index if not exists lms_lessons_course_idx on public.lms_lessons (course_id, sort_order);
+create index if not exists lms_lessons_section_idx on public.lms_lessons (section_id, sort_order);
