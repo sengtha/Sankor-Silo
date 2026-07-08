@@ -1,0 +1,109 @@
+# ============================================================================
+# SANKOR silo — MINIMAL stack (~1 GB RAM, 4 containers).
+#
+#   db            Postgres 16 + pgvector (+ pgcrypto/uuid-ossp from contrib)
+#   rest          PostgREST — the data API (RLS-gated)
+#   edge-runtime  Deno — runs authenticate-sankor-user (+ optional ai-agent-run)
+#   caddy         TLS + gateway (/rest/v1, /functions/v1)
+#
+# Dropped vs the full stack: GoTrue (the silo validates externally-minted tokens,
+# it never signs users in), Realtime, Storage (media → Cloudflare R2), Studio.
+# Note: no pg_cron here, so the AI-agent SCHEDULE is unavailable — use the full
+# stack (or add pg_cron) if you want the automated blogging agent.
+#
+# Reads its config from ../.env  (see ../.env.example). Run from this directory
+# or via ../install.sh.
+# ============================================================================
+name: sankor-silo
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_DB: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - db-data:/var/lib/postgresql/data
+      - ./init/00_roles.sh:/docker-entrypoint-initdb.d/00_roles.sh:ro
+      - ./init/01_auth_shim.sql:/docker-entrypoint-initdb.d/01_auth_shim.sql:ro
+      - ../../supabase/setup/schema/sankor_content_schema.sql:/docker-entrypoint-initdb.d/50_content.sql:ro
+      - ../../supabase/setup/schema/sankor_byoi_schema.sql:/docker-entrypoint-initdb.d/51_byoi.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    # Not published — only Caddy reaches the internet.
+    expose:
+      - "5432"
+
+  rest:
+    image: postgrest/postgrest:v12.2.3
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PGRST_DB_URI: postgres://authenticator:${POSTGRES_PASSWORD}@db:5432/postgres
+      PGRST_DB_SCHEMAS: public
+      PGRST_DB_ANON_ROLE: anon
+      PGRST_JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
+      PGRST_APP_SETTINGS_JWT_SECRET: ${JWT_SECRET}
+      PGRST_DB_USE_LEGACY_GUCS: "false"
+    expose:
+      - "3000"
+
+  edge-runtime:
+    image: supabase/edge-runtime:v1.67.4
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    command: ["start", "--main-service", "/home/deno/functions/main"]
+    environment:
+      # Router config
+      JWT_SECRET: ${JWT_SECRET}
+      VERIFY_JWT: "false"
+      # authenticate-sankor-user (the mint secret MUST equal the DB's JWT secret)
+      SANKOR_SITE_JWT_SECRET: ${JWT_SECRET}
+      SANKOR_SITE_WEBSITE_ID: ${SANKOR_SITE_WEBSITE_ID:?set SANKOR_SITE_WEBSITE_ID in .env}
+      SANKOR_HUB_URL: ${SANKOR_HUB_URL:?set SANKOR_HUB_URL in .env}
+      SANKOR_HUB_ANON_KEY: ${SANKOR_HUB_ANON_KEY:?set SANKOR_HUB_ANON_KEY in .env}
+      SANKOR_TOKEN_TTL_SECONDS: ${SANKOR_TOKEN_TTL_SECONDS:-900}
+      # ai-agent-run (optional; safe to leave blank)
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      AI_AGENT_CRON_SECRET: ${AI_AGENT_CRON_SECRET:-}
+      R2_ACCOUNT_ID: ${R2_ACCOUNT_ID:-}
+      R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:-}
+      R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY:-}
+      R2_BUCKET: ${R2_BUCKET:-}
+      R2_PUBLIC_URL: ${R2_PUBLIC_URL:-}
+    volumes:
+      - ../functions/main:/home/deno/functions/main:ro
+      - ../../supabase/setup/functions/authenticate-sankor-user:/home/deno/functions/authenticate-sankor-user:ro
+      - ../../supabase/setup/functions/ai-agent-run:/home/deno/functions/ai-agent-run:ro
+    expose:
+      - "9000"
+
+  caddy:
+    image: caddy:2.8
+    restart: unless-stopped
+    depends_on:
+      - rest
+      - edge-runtime
+    environment:
+      SILO_DOMAIN: ${SILO_DOMAIN:?set SILO_DOMAIN in .env}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  db-data:
+  caddy-data:
+  caddy-config:

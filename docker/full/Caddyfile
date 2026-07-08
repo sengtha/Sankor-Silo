@@ -1,0 +1,25 @@
+# SANKOR silo — full stack gateway. Routes the Supabase API surfaces to their
+# services; each service validates the JWT itself, so no Kong key-auth is needed.
+# Studio (the admin UI) is served at the root — protect it with basic auth.
+
+{$SILO_DOMAIN} {
+	handle_path /rest/v1/* {
+		reverse_proxy rest:3000
+	}
+	handle_path /auth/v1/* {
+		reverse_proxy auth:9999
+	}
+	handle_path /functions/v1/* {
+		reverse_proxy edge-runtime:9000
+	}
+	handle_path /storage/v1/* {
+		reverse_proxy storage:5000
+	}
+	# Studio admin UI at the root, gated by basic auth (set STUDIO_USER/STUDIO_PASSWORD_HASH).
+	handle {
+		basic_auth {
+			{$STUDIO_USER} {$STUDIO_PASSWORD_HASH}
+		}
+		reverse_proxy studio:3000
+	}
+}

@@ -1,0 +1,199 @@
+# ============================================================================
+# SANKOR silo — FULL stack (~3-4 GB RAM). The complete Supabase platform for
+# people who want Studio (DB admin UI), GoTrue auth, and Supabase Storage in
+# addition to the data API + edge functions.
+#
+#   db            supabase/postgres (pgvector, pg_cron, pg_net — AI agent works)
+#   rest          PostgREST — data API
+#   auth          GoTrue — creates the auth schema; validates JWTs
+#   storage       Supabase Storage (+ imgproxy) — S3-style file storage
+#   meta          postgres-meta — powers Studio
+#   studio        the Supabase admin UI (behind Caddy basic-auth)
+#   edge-runtime  authenticate-sankor-user (+ optional ai-agent-run)
+#   caddy         TLS + gateway
+#
+# The one invariant: JWT_SECRET is shared by db (GUC), rest, auth, storage,
+# edge-runtime, AND is the silo's mint secret. install.sh wires this for you.
+# Reads ../.env (see ../.env.example). Prefer the minimal stack unless you need
+# Studio/Storage.
+# ============================================================================
+name: sankor-silo-full
+
+services:
+  db:
+    image: supabase/postgres:15.8.1.020
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_DB: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
+    volumes:
+      - db-data:/var/lib/postgresql/data
+      - ./init/00_init.sh:/docker-entrypoint-initdb.d/00_init.sh:ro
+      - ../../supabase/setup/schema/sankor_content_schema.sql:/docker-entrypoint-initdb.d/50_content.sql:ro
+      - ../../supabase/setup/schema/sankor_byoi_schema.sql:/docker-entrypoint-initdb.d/51_byoi.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    expose: ["5432"]
+
+  rest:
+    image: postgrest/postgrest:v12.2.3
+    restart: unless-stopped
+    depends_on:
+      db: { condition: service_healthy }
+    environment:
+      PGRST_DB_URI: postgres://authenticator:${POSTGRES_PASSWORD}@db:5432/postgres
+      PGRST_DB_SCHEMAS: public,storage
+      PGRST_DB_ANON_ROLE: anon
+      PGRST_JWT_SECRET: ${JWT_SECRET}
+      PGRST_APP_SETTINGS_JWT_SECRET: ${JWT_SECRET}
+      PGRST_DB_USE_LEGACY_GUCS: "false"
+    expose: ["3000"]
+
+  auth:
+    image: supabase/gotrue:v2.174.0
+    restart: unless-stopped
+    depends_on:
+      db: { condition: service_healthy }
+    environment:
+      GOTRUE_API_HOST: 0.0.0.0
+      GOTRUE_API_PORT: "9999"
+      API_EXTERNAL_URL: ${SILO_DOMAIN}
+      GOTRUE_DB_DRIVER: postgres
+      GOTRUE_DB_DATABASE_URL: postgres://supabase_auth_admin:${POSTGRES_PASSWORD}@db:5432/postgres?search_path=auth
+      GOTRUE_SITE_URL: ${SILO_DOMAIN}
+      GOTRUE_JWT_SECRET: ${JWT_SECRET}
+      GOTRUE_JWT_EXP: "3600"
+      GOTRUE_JWT_DEFAULT_GROUP_NAME: authenticated
+      GOTRUE_JWT_ADMIN_ROLES: service_role
+      GOTRUE_JWT_AUD: authenticated
+      # The silo doesn't sign users up; disable public signup + email.
+      GOTRUE_DISABLE_SIGNUP: "true"
+      GOTRUE_EXTERNAL_EMAIL_ENABLED: "false"
+      GOTRUE_MAILER_AUTOCONFIRM: "true"
+    expose: ["9999"]
+
+  meta:
+    image: supabase/postgres-meta:v0.84.2
+    restart: unless-stopped
+    depends_on:
+      db: { condition: service_healthy }
+    environment:
+      PG_META_PORT: "8080"
+      PG_META_DB_HOST: db
+      PG_META_DB_PORT: "5432"
+      PG_META_DB_NAME: postgres
+      PG_META_DB_USER: postgres
+      PG_META_DB_PASSWORD: ${POSTGRES_PASSWORD}
+    expose: ["8080"]
+
+  studio:
+    image: supabase/studio:2025.06.30-sha-6f5982d
+    restart: unless-stopped
+    depends_on:
+      - meta
+    environment:
+      STUDIO_PG_META_URL: http://meta:8080
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      DEFAULT_ORGANIZATION_NAME: SANKOR
+      DEFAULT_PROJECT_NAME: silo
+      SUPABASE_URL: http://kong:8000
+      SUPABASE_PUBLIC_URL: ${SILO_DOMAIN}
+      SUPABASE_ANON_KEY: ${ANON_KEY:?set ANON_KEY in .env}
+      SUPABASE_SERVICE_KEY: ${SERVICE_ROLE_KEY:?set SERVICE_ROLE_KEY in .env}
+      AUTH_JWT_SECRET: ${JWT_SECRET}
+    expose: ["3000"]
+
+  imgproxy:
+    image: darthsim/imgproxy:v3.8.0
+    restart: unless-stopped
+    environment:
+      IMGPROXY_BIND: ":5001"
+      IMGPROXY_USE_ETAG: "true"
+      IMGPROXY_ENABLE_WEBP_DETECTION: "true"
+      IMGPROXY_LOCAL_FILESYSTEM_ROOT: /
+    volumes:
+      - storage-data:/var/lib/storage:z
+    expose: ["5001"]
+
+  storage:
+    image: supabase/storage-api:v1.19.3
+    restart: unless-stopped
+    depends_on:
+      db: { condition: service_healthy }
+      rest: { condition: service_started }
+      imgproxy: { condition: service_started }
+    environment:
+      ANON_KEY: ${ANON_KEY}
+      SERVICE_KEY: ${SERVICE_ROLE_KEY}
+      POSTGREST_URL: http://rest:3000
+      PGRST_JWT_SECRET: ${JWT_SECRET}
+      DATABASE_URL: postgres://supabase_storage_admin:${POSTGRES_PASSWORD}@db:5432/postgres
+      FILE_SIZE_LIMIT: "52428800"
+      STORAGE_BACKEND: file
+      FILE_STORAGE_BACKEND_PATH: /var/lib/storage
+      TENANT_ID: stub
+      REGION: stub
+      GLOBAL_S3_BUCKET: stub
+      ENABLE_IMAGE_TRANSFORMATION: "true"
+      IMGPROXY_URL: http://imgproxy:5001
+    volumes:
+      - storage-data:/var/lib/storage:z
+    expose: ["5000"]
+
+  edge-runtime:
+    image: supabase/edge-runtime:v1.67.4
+    restart: unless-stopped
+    depends_on:
+      db: { condition: service_healthy }
+    command: ["start", "--main-service", "/home/deno/functions/main"]
+    environment:
+      JWT_SECRET: ${JWT_SECRET}
+      VERIFY_JWT: "false"
+      SANKOR_SITE_JWT_SECRET: ${JWT_SECRET}
+      SANKOR_SITE_WEBSITE_ID: ${SANKOR_SITE_WEBSITE_ID:?set SANKOR_SITE_WEBSITE_ID in .env}
+      SANKOR_HUB_URL: ${SANKOR_HUB_URL:?set SANKOR_HUB_URL in .env}
+      SANKOR_HUB_ANON_KEY: ${SANKOR_HUB_ANON_KEY:?set SANKOR_HUB_ANON_KEY in .env}
+      SANKOR_TOKEN_TTL_SECONDS: ${SANKOR_TOKEN_TTL_SECONDS:-900}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      AI_AGENT_CRON_SECRET: ${AI_AGENT_CRON_SECRET:-}
+      R2_ACCOUNT_ID: ${R2_ACCOUNT_ID:-}
+      R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:-}
+      R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY:-}
+      R2_BUCKET: ${R2_BUCKET:-}
+      R2_PUBLIC_URL: ${R2_PUBLIC_URL:-}
+    volumes:
+      - ../functions/main:/home/deno/functions/main:ro
+      - ../../supabase/setup/functions/authenticate-sankor-user:/home/deno/functions/authenticate-sankor-user:ro
+      - ../../supabase/setup/functions/ai-agent-run:/home/deno/functions/ai-agent-run:ro
+    expose: ["9000"]
+
+  caddy:
+    image: caddy:2.8
+    restart: unless-stopped
+    depends_on:
+      - rest
+      - auth
+      - edge-runtime
+      - studio
+    # env_file (not interpolation) so the bcrypt STUDIO_PASSWORD_HASH — which
+    # contains '$' — reaches Caddy intact. SILO_DOMAIN/STUDIO_USER come too.
+    env_file:
+      - ../.env
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  db-data:
+  storage-data:
+  caddy-data:
+  caddy-config:

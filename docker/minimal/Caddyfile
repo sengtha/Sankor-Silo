@@ -1,0 +1,17 @@
+# SANKOR silo — minimal stack gateway. Terminates TLS (auto Let's Encrypt for a
+# real domain) and routes the two Supabase API surfaces the silo exposes:
+#   /rest/v1/*      → PostgREST   (public site reads via anon key; admin via JWT)
+#   /functions/v1/* → Edge Runtime (authenticate-sankor-user, ai-agent-run)
+# Nothing else is exposed. For local testing, set SILO_DOMAIN=http://localhost.
+
+{$SILO_DOMAIN} {
+	handle_path /rest/v1/* {
+		reverse_proxy rest:3000
+	}
+	handle_path /functions/v1/* {
+		reverse_proxy edge-runtime:9000
+	}
+	handle {
+		respond "SANKOR silo" 200
+	}
+}
