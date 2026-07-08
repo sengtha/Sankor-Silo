@@ -71,4 +71,7 @@ echo "  Anon key : $(getenv ANON_KEY)"
 echo
 echo "Next: in the SANKOR admin → Connect your site, paste the Silo URL + Anon key above."
 [[ "$PROFILE" == "full" ]] && echo "Studio admin UI: $(getenv SILO_DOMAIN)/  (user: $(getenv STUDIO_USER))"
+echo
+echo "Once it's booted (~1 min), check everything is healthy:"
+echo "  ./doctor.sh $PROFILE"
 echo "Logs: docker compose -f $PROFILE/docker-compose.yml --env-file .env logs -f"

@@ -63,6 +63,18 @@ key into your silo.
 
 Then, in the SANKOR admin → **Connect your site**, paste the Silo URL + Anon key.
 
+## Verify it's healthy
+
+After the stack boots (~1 min), run the health check:
+
+```bash
+./doctor.sh minimal        # or: full
+```
+
+It confirms, green/red: containers running, schema applied, the data API
+reachable, a **freshly-minted token is accepted** (proving `JWT_SECRET` == the
+mint secret), and the edge function responding. Exits non-zero if anything's off.
+
 ## Day 2
 
 ```bash
@@ -86,6 +98,7 @@ docker compose -f minimal/docker-compose.yml --env-file .env exec -T db \
 ```
 docker/
   install.sh          interactive installer (both stacks)
+  doctor.sh           post-boot health check (containers, schema, API, JWT, fn)
   update.sh           re-apply schema + pull images
   .env.example        every setting, documented
   lib/gen-keys.sh     JWT secret + anon/service key generation (openssl)
