@@ -709,6 +709,42 @@ revoke all on function public.has_knowledge_docs(uuid) from public;
 grant execute on function public.has_knowledge_docs(uuid) to anon, authenticated;
 
 -- ============================================================================
+
+-- Vector search over knowledge_docs for the AI chatbot + content agent.
+-- SECURITY DEFINER so the anonymous storefront chat can search a site's own
+-- docs (scoped strictly by filter_website_id), while knowledge_docs stays
+-- RLS owner-only for direct reads. Mirrors has_knowledge_docs().
+create or replace function public.match_knowledge_docs(
+  query_embedding vector(768),
+  match_threshold float,
+  match_count int,
+  filter_website_id uuid
+)
+returns table (
+  id uuid,
+  content text,
+  similarity float
+)
+language sql
+security definer
+stable
+set search_path = public
+as $$
+  select
+    knowledge_docs.id,
+    knowledge_docs.content,
+    1 - (knowledge_docs.embedding <=> query_embedding) as similarity
+  from knowledge_docs
+  where knowledge_docs.website_id = filter_website_id
+    and 1 - (knowledge_docs.embedding <=> query_embedding) > match_threshold
+  order by knowledge_docs.embedding <=> query_embedding
+  limit match_count;
+$$;
+
+revoke all on function public.match_knowledge_docs(vector, float, int, uuid) from public;
+grant execute on function public.match_knowledge_docs(vector, float, int, uuid) to anon, authenticated;
+
+-- ============================================================================
 -- Courses / LMS (silo-hosted)
 -- ----------------------------------------------------------------------------
 -- Namespaced lms_* to avoid the Education `courses` table. Content only
