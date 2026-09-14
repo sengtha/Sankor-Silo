@@ -49,6 +49,12 @@ tickets, not keys; the silo holds the signing secret.
 ## What's in this repo
 
 ```
+install.sh                                     one-command install on a fresh VM
+                                               (Docker + clone + stack; used by CI)
+.github/workflows/deploy-silo.yml              "Deploy Silo" — deploy/update over
+                                               SSH from your own fork
+docker/                                        self-hosted stack — see docker/README.md
+docs/Deploy-from-GitHub.md                     all the deployment paths, in full
 supabase/
   config.toml                                  CLI config (both functions: verify_jwt off)
   setup/
@@ -61,6 +67,31 @@ supabase/
       authenticate-sankor-user/    (required)  ticket → mint silo JWT
       ai-agent-run/                (optional)  scheduled AI blogging, runs in-silo
 ```
+
+---
+
+## Deploy
+
+Two routes to a running silo — both keep the database and its keys entirely
+under your control:
+
+| Route | Best for | Start here |
+|---|---|---|
+| **Self-hosted Docker stack** on your own VM | Full sovereignty, one command, no Supabase account | [Deploy a silo from GitHub](docs/Deploy-from-GitHub.md) |
+| **Managed Supabase project** | You already run Supabase (cloud or self-hosted) | The setup checklist below |
+
+For the Docker route you can install straight from this repo:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/sengtha/sankor-byoi/main/install.sh \
+  | sudo bash -s -- --domain silo.example.com \
+      --website-id <uuid> --hub-anon-key <hub-anon-key>
+```
+
+…or fork this repo, add your `SSH_*` secrets, and run the **Deploy Silo**
+workflow (**Actions → Deploy Silo → Run workflow**) to deploy and update the
+same stack over SSH from your fork. Both paths are documented in
+[docs/Deploy-from-GitHub.md](docs/Deploy-from-GitHub.md).
 
 ---
 

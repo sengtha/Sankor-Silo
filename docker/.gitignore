@@ -1,2 +1,6 @@
 docker/.env
 .env
+# install.sh --force keeps a timestamped copy of the previous secrets, and
+# setenv writes through a temp file — neither may ever be committed.
+.env.bak.*
+.env.tmp

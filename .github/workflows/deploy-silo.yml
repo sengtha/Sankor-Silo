@@ -1,0 +1,211 @@
+name: Deploy Silo
+
+# Deploy your sovereign SANKOR silo to YOUR server, straight from your fork —
+# the SANKOR hub never touches it. Fork this repo, add the secrets below, then
+# run this workflow (Actions tab → Deploy Silo → Run workflow).
+#
+# Required repository secrets (Settings → Secrets and variables → Actions):
+#   SSH_HOST             your server's IP or hostname
+#   SSH_USER             an SSH user with sudo (or root)
+#   SSH_PRIVATE_KEY      a private key authorized on that server
+#   SANKOR_HUB_ANON_KEY  the hub's anon key (first install only)
+#
+# Optional secrets (leave unset to skip):
+#   SANKOR_HUB_URL    defaults to https://hub.sankor.site
+#   STUDIO_PASSWORD   required only for the "full" profile (Studio admin login)
+#   GEMINI_API_KEY, AI_AGENT_CRON_SECRET          AI blogging agent
+#   R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY,
+#   R2_BUCKET, R2_PUBLIC_URL                      Cloudflare R2 media
+#
+# Your server needs: a public IP, ports 80 + 443 open, and DNS for the domain
+# you enter below pointing at it. It runs install.sh from THIS fork, which
+# installs Docker, clones the repo to /opt/sankor-silo, generates the silo's
+# JWT secret + API keys, and brings the stack up behind automatic HTTPS.
+#
+# Re-run any time to update in place — your .env and database are preserved.
+
+on:
+  workflow_dispatch:
+    inputs:
+      domain:
+        description: "Public domain for the silo (DNS A record → your server)"
+        required: true
+      profile:
+        description: "Stack: minimal (~1 GB RAM) or full (adds Studio/GoTrue/Storage)"
+        required: true
+        default: minimal
+        type: choice
+        options: [minimal, full]
+      website_id:
+        description: "This silo's website id from the SANKOR admin (required on first install)"
+        required: false
+      force_rotate_secrets:
+        description: "Regenerate ALL secrets — the new ANON_KEY must be re-registered in the admin"
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: deploy-silo
+  cancel-in-progress: false
+
+env:
+  INSTALL_DIR: /opt/sankor-silo
+  REMOTE_ENV: /tmp/sankor-deploy.env
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check required secrets
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          STUDIO_PASSWORD: ${{ secrets.STUDIO_PASSWORD }}
+          PROFILE: ${{ inputs.profile }}
+        run: |
+          set -euo pipefail
+          [ -n "$SSH_HOST" ]        || { echo "::error::Missing secret SSH_HOST"; exit 1; }
+          [ -n "$SSH_USER" ]        || { echo "::error::Missing secret SSH_USER"; exit 1; }
+          [ -n "$SSH_PRIVATE_KEY" ] || { echo "::error::Missing secret SSH_PRIVATE_KEY"; exit 1; }
+          if [ "$PROFILE" = "full" ] && [ -z "$STUDIO_PASSWORD" ]; then
+            echo "::error::The full profile needs a Studio login — add the STUDIO_PASSWORD secret"; exit 1
+          fi
+
+      - name: Set up SSH
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+
+      # Secrets travel in a 0600 file, not on the command line, so they never
+      # show up in the remote server's process list.
+      - name: Stage deploy configuration
+        env:
+          DOMAIN: ${{ inputs.domain }}
+          WEBSITE_ID: ${{ inputs.website_id }}
+          PROFILE: ${{ inputs.profile }}
+          FORCE: ${{ inputs.force_rotate_secrets }}
+          HUB_URL: ${{ secrets.SANKOR_HUB_URL }}
+          HUB_ANON_KEY: ${{ secrets.SANKOR_HUB_ANON_KEY }}
+          STUDIO_PASSWORD: ${{ secrets.STUDIO_PASSWORD }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          AI_AGENT_CRON_SECRET: ${{ secrets.AI_AGENT_CRON_SECRET }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_PUBLIC_URL: ${{ secrets.R2_PUBLIC_URL }}
+          REPO: ${{ github.repository }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          umask 077
+          : > deploy.env
+          # %q-quote every value so passwords and keys survive `.` sourcing intact.
+          put() { [ -n "${2:-}" ] || return 0; printf '%s=%q\n' "$1" "$2" >> deploy.env; }
+          put SILO_DOMAIN              "$DOMAIN"
+          put SANKOR_SITE_WEBSITE_ID   "$WEBSITE_ID"
+          put SANKOR_PROFILE           "$PROFILE"
+          put SANKOR_HUB_URL           "$HUB_URL"
+          put SANKOR_HUB_ANON_KEY      "$HUB_ANON_KEY"
+          put STUDIO_PASSWORD          "$STUDIO_PASSWORD"
+          put GEMINI_API_KEY           "$GEMINI_API_KEY"
+          put AI_AGENT_CRON_SECRET     "$AI_AGENT_CRON_SECRET"
+          put R2_ACCOUNT_ID            "$R2_ACCOUNT_ID"
+          put R2_ACCESS_KEY_ID         "$R2_ACCESS_KEY_ID"
+          put R2_SECRET_ACCESS_KEY     "$R2_SECRET_ACCESS_KEY"
+          put R2_BUCKET                "$R2_BUCKET"
+          put R2_PUBLIC_URL            "$R2_PUBLIC_URL"
+          put SANKOR_INSTALL_DIR       "$INSTALL_DIR"
+          put SANKOR_REPO              "$REPO"
+          put SANKOR_BRANCH            "$BRANCH"
+          [ "$FORCE" = "true" ] && put SANKOR_FORCE 1
+          echo "Staged $(wc -l < deploy.env) settings for $DOMAIN ($PROFILE)."
+
+      - name: Deploy over SSH
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+        run: |
+          set -euo pipefail
+          scp -i ~/.ssh/id_deploy -o StrictHostKeyChecking=accept-new \
+            deploy.env "$SSH_USER@$SSH_HOST:$REMOTE_ENV"
+          rm -f deploy.env
+
+          # `bash -s` reads the script below from stdin; it runs as root either
+          # directly or via sudo, depending on who SSH_USER is.
+          ssh -i ~/.ssh/id_deploy -o StrictHostKeyChecking=accept-new \
+            "$SSH_USER@$SSH_HOST" \
+            'SUDO=; [ "$(id -u)" -eq 0 ] || SUDO=sudo; $SUDO bash -s' <<'REMOTE'
+          set -euo pipefail
+          trap 'rm -f /tmp/sankor-deploy.env /tmp/sankor-install.sh' EXIT
+
+          set -a; . /tmp/sankor-deploy.env; set +a
+
+          echo "Fetching installer from ${SANKOR_REPO}@${SANKOR_BRANCH}…"
+          curl -fsSL "https://raw.githubusercontent.com/${SANKOR_REPO}/${SANKOR_BRANCH}/install.sh" \
+            -o /tmp/sankor-install.sh
+
+          bash /tmp/sankor-install.sh \
+            --repo "$SANKOR_REPO" --branch "$SANKOR_BRANCH" \
+            ${SANKOR_FORCE:+--force}
+          REMOTE
+
+      - name: Health check
+        continue-on-error: true
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          PROFILE: ${{ inputs.profile }}
+        run: |
+          set -euo pipefail
+          echo "Giving the stack a minute to apply the schema and get a certificate…"
+          sleep 60
+          ssh -i ~/.ssh/id_deploy -o StrictHostKeyChecking=accept-new \
+            "$SSH_USER@$SSH_HOST" \
+            "SUDO=; [ \"\$(id -u)\" -eq 0 ] || SUDO=sudo; cd '$INSTALL_DIR/docker' && \$SUDO ./doctor.sh '$PROFILE'"
+
+      - name: Clean up
+        if: always()
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+        run: |
+          set -uo pipefail
+          rm -f deploy.env
+          if [ -f ~/.ssh/id_deploy ]; then
+            ssh -i ~/.ssh/id_deploy -o StrictHostKeyChecking=accept-new \
+              "$SSH_USER@$SSH_HOST" "rm -f '$REMOTE_ENV'" || true
+            rm -f ~/.ssh/id_deploy
+          fi
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### SANKOR silo deploy"
+            echo ""
+            echo "- **Domain:** ${{ inputs.domain }}"
+            echo "- **Stack:** \`${{ inputs.profile }}\`"
+            echo "- **Source:** \`${{ github.repository }}@${{ github.ref_name }}\`"
+            echo "- **Installed to:** \`$INSTALL_DIR\`"
+            echo ""
+            echo "If it succeeded, finish the connection in the SANKOR admin → **Connect your site**."
+            echo "Read the silo's public URL and anon key off the server:"
+            echo '```'
+            echo "sudo grep -E '^(SILO_DOMAIN|ANON_KEY)=' $INSTALL_DIR/docker/.env"
+            echo '```'
+            echo "Watch it come up, or re-check its health:"
+            echo '```'
+            echo "cd $INSTALL_DIR/docker"
+            echo "sudo docker compose -f ${{ inputs.profile }}/docker-compose.yml --env-file .env logs -f"
+            echo "sudo ./doctor.sh ${{ inputs.profile }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
