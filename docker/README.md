@@ -63,6 +63,27 @@ key into your silo.
 
 Then, in the SANKOR admin → **Connect your site**, paste the Silo URL + Anon key.
 
+### Unattended installs
+
+Pass the answers up front and `install.sh` never prompts — this is how the
+[**Deploy Silo**](../docs/Deploy-from-GitHub.md) GitHub Actions workflow drives
+it. Prompting is also skipped automatically whenever stdin is not a terminal.
+
+```bash
+./install.sh --non-interactive --profile minimal \
+  --domain https://silo.example.com --website-id <uuid> \
+  --hub-url https://hub.sankor.site --hub-anon-key <key>
+```
+
+Every flag has an environment-variable equivalent (`SILO_DOMAIN`,
+`SANKOR_SITE_WEBSITE_ID`, `SANKOR_HUB_URL`, `SANKOR_HUB_ANON_KEY`,
+`SANKOR_PROFILE`, `STUDIO_PASSWORD`, …) — run `./install.sh --help` for the full
+list. A missing required value is a clean error, never a hung prompt.
+
+To deploy from a **fresh VM in one command** (installs Docker, clones the repo,
+then runs this installer), use the repo-root bootstrap instead — see
+[Deploy a silo from GitHub](../docs/Deploy-from-GitHub.md).
+
 ## Verify it's healthy
 
 After the stack boots (~1 min), run the health check:
@@ -97,7 +118,7 @@ docker compose -f minimal/docker-compose.yml --env-file .env exec -T db \
 
 ```
 docker/
-  install.sh          interactive installer (both stacks)
+  install.sh          installer, both stacks (interactive or --non-interactive)
   doctor.sh           post-boot health check (containers, schema, API, JWT, fn)
   update.sh           re-apply schema + pull images
   .env.example        every setting, documented
