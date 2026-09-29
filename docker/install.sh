@@ -115,6 +115,11 @@ if [[ -z "$PROFILE" ]]; then
 fi
 [[ "$PROFILE" == "minimal" || "$PROFILE" == "full" ]] || die "unknown profile: $PROFILE (use minimal|full)"
 
+# Everything written from here on (.env, .env.tmp, backups) holds secrets:
+# create it private from the start rather than chmod-ing afterwards.
+OLD_UMASK="$(umask)"
+umask 077
+
 if [[ -f .env && -z "$FORCE" ]]; then
   echo "Found existing .env — reusing it."
   # A redeploy may still move the silo to a new domain or re-point it at the
@@ -165,7 +170,8 @@ else
 
   if [[ "$PROFILE" == "full" ]]; then
     echo "Hashing Studio password…"
-    HASH="$(docker run --rm caddy:2.8 caddy hash-password --plaintext "$SP")"
+    # Password on stdin, not argv (visible in `ps` and Docker's logs).
+    HASH="$(printf '%s\n' "$SP" | docker run --rm -i caddy:2.8 caddy hash-password)"
     { echo "STUDIO_USER=$SU"; printf 'STUDIO_PASSWORD_HASH=%s\n' "$HASH"; } >> .env
   fi
   echo "Wrote .env (keep it private)."
@@ -183,6 +189,7 @@ if [[ -n "${GEMINI_API_KEY:-}${AI_AGENT_CRON_SECRET:-}${R2_ACCOUNT_ID:-}${R2_ACC
   setenv R2_PUBLIC_URL        "${R2_PUBLIC_URL:-}"
 fi
 chmod 600 .env
+umask "$OLD_UMASK"
 
 echo "Starting the $PROFILE stack…"
 docker compose -f "$PROFILE/docker-compose.yml" --env-file .env up -d

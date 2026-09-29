@@ -736,9 +736,11 @@ as $$
     1 - (knowledge_docs.embedding <=> query_embedding) as similarity
   from knowledge_docs
   where knowledge_docs.website_id = filter_website_id
-    and 1 - (knowledge_docs.embedding <=> query_embedding) > match_threshold
+    -- Callable by anon (storefront chat). Clamp the inputs so a caller can't
+    -- pass threshold -1 / count 100000 and dump every private doc.
+    and 1 - (knowledge_docs.embedding <=> query_embedding) > greatest(coalesce(match_threshold, 0.4), 0.3)
   order by knowledge_docs.embedding <=> query_embedding
-  limit match_count;
+  limit least(greatest(coalesce(match_count, 5), 1), 10);
 $$;
 
 revoke all on function public.match_knowledge_docs(vector, float, int, uuid) from public;
