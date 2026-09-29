@@ -62,6 +62,7 @@ server. The SANKOR hub is not involved.
    | `SSH_HOST` | ✅ | Your server's IP/hostname |
    | `SSH_USER` | ✅ | An SSH user with `sudo` (or `root`) |
    | `SSH_PRIVATE_KEY` | ✅ | A private key authorized on that server |
+   | `SSH_KNOWN_HOSTS` | ✅ | Your server's SSH host key: run `ssh-keyscan -H <your-server>` from a machine you trust, check the fingerprint against your provider's console, and paste the output. The deploy refuses to connect to any other host key, so a spoofed server can never receive your secrets. |
    | `SANKOR_HUB_ANON_KEY` | ✅ | The hub's anon key (first install only) |
    | `SANKOR_HUB_URL` | ⬜ | Defaults to `https://hub.sankor.site` |
    | `STUDIO_PASSWORD` | ⬜ | Required for the `full` profile |

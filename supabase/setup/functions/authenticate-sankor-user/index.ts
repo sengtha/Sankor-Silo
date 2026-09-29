@@ -93,8 +93,9 @@ Deno.serve(async (req) => {
     });
 
     if (!res.ok) {
-      const detail = await res.text();
-      return json({ error: "ticket rejected", detail }, 401);
+      // Log the hub's error server-side; don't echo it to the caller.
+      console.error("redeem_byoi_ticket failed", res.status, await res.text().catch(() => ""));
+      return json({ error: "ticket rejected" }, 401);
     }
 
     const rows = (await res.json()) as RedeemRow[];

@@ -124,9 +124,11 @@ log "Installing the $PROFILE stack for $DOMAIN…"
 set -- --non-interactive --profile "$PROFILE" --domain "$DOMAIN" --ttl "$TTL"
 [ -n "$WEBSITE_ID" ]         && set -- "$@" --website-id "$WEBSITE_ID"
 [ -n "$HUB_URL" ]            && set -- "$@" --hub-url "$HUB_URL"
-[ -n "$HUB_ANON_KEY" ]       && set -- "$@" --hub-anon-key "$HUB_ANON_KEY"
 [ -n "$STUDIO_USER_IN" ]     && set -- "$@" --studio-user "$STUDIO_USER_IN"
-[ -n "$STUDIO_PASSWORD_IN" ] && set -- "$@" --studio-password "$STUDIO_PASSWORD_IN"
+# Secrets go through the environment, not argv: command lines are visible to
+# every local user in `ps`.
+[ -n "$HUB_ANON_KEY" ]       && export SANKOR_HUB_ANON_KEY="$HUB_ANON_KEY"
+[ -n "$STUDIO_PASSWORD_IN" ] && export STUDIO_PASSWORD="$STUDIO_PASSWORD_IN"
 [ -n "$FORCE" ]              && set -- "$@" "$FORCE"
 
 bash "$DIR/docker/install.sh" "$@"

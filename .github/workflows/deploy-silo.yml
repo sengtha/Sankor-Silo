@@ -8,6 +8,12 @@ name: Deploy Silo
 #   SSH_HOST             your server's IP or hostname
 #   SSH_USER             an SSH user with sudo (or root)
 #   SSH_PRIVATE_KEY      a private key authorized on that server
+#   SSH_KNOWN_HOSTS      your server's SSH host key line(s). Get them from a
+#                        machine you trust (NOT from this workflow):
+#                            ssh-keyscan -H <your-server>
+#                        and verify the fingerprint against your provider's
+#                        console. The deploy refuses to connect without it, so
+#                        a spoofed host can never receive your secrets.
 #   SANKOR_HUB_ANON_KEY  the hub's anon key (first install only)
 #
 # Optional secrets (leave unset to skip):
@@ -51,7 +57,6 @@ concurrency:
 
 env:
   INSTALL_DIR: /opt/sankor-silo
-  REMOTE_ENV: /tmp/sankor-deploy.env
 
 jobs:
   deploy:
@@ -62,6 +67,7 @@ jobs:
           SSH_HOST: ${{ secrets.SSH_HOST }}
           SSH_USER: ${{ secrets.SSH_USER }}
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
           STUDIO_PASSWORD: ${{ secrets.STUDIO_PASSWORD }}
           PROFILE: ${{ inputs.profile }}
         run: |
@@ -69,23 +75,27 @@ jobs:
           [ -n "$SSH_HOST" ]        || { echo "::error::Missing secret SSH_HOST"; exit 1; }
           [ -n "$SSH_USER" ]        || { echo "::error::Missing secret SSH_USER"; exit 1; }
           [ -n "$SSH_PRIVATE_KEY" ] || { echo "::error::Missing secret SSH_PRIVATE_KEY"; exit 1; }
+          [ -n "$SSH_KNOWN_HOSTS" ] || { echo "::error::Missing secret SSH_KNOWN_HOSTS — run 'ssh-keyscan -H <your-server>' from a machine you trust, verify the fingerprint, and save the output as this secret"; exit 1; }
           if [ "$PROFILE" = "full" ] && [ -z "$STUDIO_PASSWORD" ]; then
             echo "::error::The full profile needs a Studio login — add the STUDIO_PASSWORD secret"; exit 1
           fi
 
       - name: Set up SSH
         env:
-          SSH_HOST: ${{ secrets.SSH_HOST }}
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
         run: |
           set -euo pipefail
           mkdir -p ~/.ssh && chmod 700 ~/.ssh
           printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_deploy
           chmod 600 ~/.ssh/id_deploy
-          ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+          # Pinned host key only — never trust-on-first-use from a fresh runner.
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
 
-      # Secrets travel in a 0600 file, not on the command line, so they never
-      # show up in the remote server's process list.
+      # Secrets are staged in a 0600 file on the runner and streamed to the
+      # server over the SSH session's stdin: never on a command line (process
+      # list) and never written to a predictable path on the server.
       - name: Stage deploy configuration
         env:
           DOMAIN: ${{ inputs.domain }}
@@ -135,28 +145,30 @@ jobs:
           SSH_USER: ${{ secrets.SSH_USER }}
         run: |
           set -euo pipefail
-          scp -i ~/.ssh/id_deploy -o StrictHostKeyChecking=accept-new \
-            deploy.env "$SSH_USER@$SSH_HOST:$REMOTE_ENV"
-          rm -f deploy.env
 
-          # `bash -s` reads the script below from stdin; it runs as root either
-          # directly or via sudo, depending on who SSH_USER is.
-          ssh -i ~/.ssh/id_deploy -o StrictHostKeyChecking=accept-new \
-            "$SSH_USER@$SSH_HOST" \
-            'SUDO=; [ "$(id -u)" -eq 0 ] || SUDO=sudo; $SUDO bash -s' <<'REMOTE'
-          set -euo pipefail
-          trap 'rm -f /tmp/sankor-deploy.env /tmp/sankor-install.sh' EXIT
-
-          set -a; . /tmp/sankor-deploy.env; set +a
+          # `bash -s` runs the stream below as root (directly or via sudo): first
+          # the %q-quoted settings, exported, then the deploy script.
+          {
+            echo 'set -euo pipefail'
+            echo 'set -a'
+            cat deploy.env
+            echo 'set +a'
+            cat <<'REMOTE'
+          INSTALLER="$(mktemp /root/sankor-install.XXXXXX)"
+          trap 'rm -f "$INSTALLER"' EXIT
 
           echo "Fetching installer from ${SANKOR_REPO}@${SANKOR_BRANCH}…"
           curl -fsSL "https://raw.githubusercontent.com/${SANKOR_REPO}/${SANKOR_BRANCH}/install.sh" \
-            -o /tmp/sankor-install.sh
+            -o "$INSTALLER"
 
-          bash /tmp/sankor-install.sh \
+          bash "$INSTALLER" \
             --repo "$SANKOR_REPO" --branch "$SANKOR_BRANCH" \
-            ${SANKOR_FORCE:+--force}
+            ${SANKOR_FORCE:+--force} </dev/null
           REMOTE
+          } | ssh -i ~/.ssh/id_deploy -o StrictHostKeyChecking=yes \
+            "$SSH_USER@$SSH_HOST" \
+            'SUDO=; [ "$(id -u)" -eq 0 ] || SUDO=sudo; $SUDO bash -s'
+          rm -f deploy.env
 
       - name: Health check
         continue-on-error: true
@@ -168,7 +180,7 @@ jobs:
           set -euo pipefail
           echo "Giving the stack a minute to apply the schema and get a certificate…"
           sleep 60
-          ssh -i ~/.ssh/id_deploy -o StrictHostKeyChecking=accept-new \
+          ssh -i ~/.ssh/id_deploy -o StrictHostKeyChecking=yes \
             "$SSH_USER@$SSH_HOST" \
             "SUDO=; [ \"\$(id -u)\" -eq 0 ] || SUDO=sudo; cd '$INSTALL_DIR/docker' && \$SUDO ./doctor.sh '$PROFILE'"
 
@@ -179,12 +191,7 @@ jobs:
           SSH_USER: ${{ secrets.SSH_USER }}
         run: |
           set -uo pipefail
-          rm -f deploy.env
-          if [ -f ~/.ssh/id_deploy ]; then
-            ssh -i ~/.ssh/id_deploy -o StrictHostKeyChecking=accept-new \
-              "$SSH_USER@$SSH_HOST" "rm -f '$REMOTE_ENV'" || true
-            rm -f ~/.ssh/id_deploy
-          fi
+          rm -f deploy.env ~/.ssh/id_deploy
 
       - name: Summary
         if: always()

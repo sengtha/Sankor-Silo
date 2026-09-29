@@ -300,4 +300,13 @@ already running when you register in step 7.
 - Public (anon) access is read-only for *published* content, plus write-only
   submission of leads / orders / bookings — anonymous visitors cannot list
   orders, leads, knowledge, or drafts.
-- A SANKOR hub breach does not expose silo data — the hub has no key to it.
+- The hub never holds the silo's signing secret, database password or
+  service key. It **can**, however, authorize a token: the silo mints a token
+  for any ticket the hub's `redeem_byoi_ticket` accepts. So someone in full
+  control of the hub database could obtain an authoring token for your site
+  (content read/write, the same power a SANKOR admin of the site has) — but
+  never `service_role`, your database credentials, or other silos' data.
+  Rotate `SANKOR_SITE_JWT_SECRET` to invalidate outstanding tokens.
+- Tables that don't belong to the public site (`byoi_config`, `social_posts`)
+  are RLS-locked; paid bodies (lesson content, members-only content, premium
+  articles) are not readable with the anon key (column-level grants).

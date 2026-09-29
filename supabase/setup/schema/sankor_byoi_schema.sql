@@ -685,3 +685,44 @@ $$;
 
 grant execute on function public.snapshot_modules(uuid) to authenticated;
 grant execute on function public.restore_modules(uuid, jsonb) to authenticated;
+
+-- ============================================================================
+-- 9. Private columns (paid content) — not readable with the anon key
+-- ============================================================================
+-- The public-read policies above expose published rows to anon, and a
+-- table-level GRANT SELECT exposed every column of them: paid lesson bodies,
+-- members-only content and premium article bodies could be fetched straight
+-- from PostgREST with the site's public anon key, bypassing the unlock flows.
+-- anon now gets column-level SELECT on everything EXCEPT those columns; the
+-- SANKOR app reads them with its minted server token after checking
+-- entitlement. Re-running this file re-applies the grants (run it again after
+-- adding columns to these tables, or anon won't see the new column).
+create or replace function public.grant_public_columns(p_table text, p_private text[])
+returns void
+language plpgsql
+set search_path = public
+as $$
+declare
+  col text;
+begin
+  if to_regclass('public.' || p_table) is null then
+    return;
+  end if;
+  execute format('revoke select on public.%I from anon', p_table);
+  for col in
+    select c.column_name
+      from information_schema.columns c
+     where c.table_schema = 'public'
+       and c.table_name = p_table
+       and c.column_name <> all (p_private)
+  loop
+    execute format('grant select (%I) on public.%I to anon', col, p_table);
+  end loop;
+end;
+$$;
+
+revoke all on function public.grant_public_columns(text, text[]) from public, anon, authenticated;
+
+select public.grant_public_columns('lms_lessons',      array['content', 'video_url', 'attachment_url']);
+select public.grant_public_columns('membership_plans', array['member_content']);
+select public.grant_public_columns('articles',         array['content']);
