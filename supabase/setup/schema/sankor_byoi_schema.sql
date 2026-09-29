@@ -69,6 +69,13 @@ create table if not exists public.byoi_config (
 comment on table public.byoi_config is
     'Single-row anchor identifying which SANKOR website this silo serves.';
 
+-- Locked down: no client role may read or write it directly. The SECURITY
+-- DEFINER helpers below read it as the owner. Without this, anyone holding the
+-- public anon key could DELETE or re-point the row (default privileges grant
+-- anon ALL on new tables) and so deny every authoring write on the silo.
+alter table public.byoi_config enable row level security;
+revoke all on public.byoi_config from anon, authenticated;
+
 -- ----------------------------------------------------------------------------
 -- 2. JWT claim helpers
 -- ----------------------------------------------------------------------------
@@ -161,7 +168,7 @@ declare
         'events','event_ticket_types','membership_plans','testimonials',
         'milestones','orders','pages','posts','products',
         'profiles','resources','team_members',
-        'web3_settings'
+        'web3_settings','social_posts'
     ];
     pred text;
 begin
